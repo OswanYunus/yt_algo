@@ -300,7 +300,8 @@ const CATEGORY_WEIGHTS = {
 const GENERIC_TERMS = new Set([
   'official', 'video', 'audio', 'trailer', 'teaser', 'clip', 'movie', 'film',
   'music', 'song', 'lyrics', 'youtube', 'netflix', 'hbo', 'disney', 'amazon',
-  'universal', 'pictures', 'studios', 'channel', 'new', 'full', 'hd', '4k'
+  'universal', 'pictures', 'studios', 'channel', 'new', 'full', 'hd', '4k',
+  'extended', 'final', 'exclusive', 'scene', 'preview'
 ]);
 
 const STOPWORDS = new Set([
@@ -612,6 +613,7 @@ function relatednessScore(current, candidate, rawCandidate = {}) {
   if (isClearlyWrongGenre(current, candidate)) score -= 18;
   if (isWrongFormatExperience(current, candidate)) score -= 35;
   if (isTalkingAboutInsteadOfSameFormat(current, candidate)) score -= 18;
+  if (isSameTitleReupload(current, candidate)) score -= 45;
   return score;
 }
 
@@ -620,6 +622,7 @@ function passesRelatednessGate(current, candidate, score) {
   if (isClearlyWrongGenre(current, candidate)) return false;
   if (isWrongFormatExperience(current, candidate)) return false;
   if (isTalkingAboutInsteadOfSameFormat(current, candidate)) return false;
+  if (isSameTitleReupload(current, candidate)) return false;
 
   const currentHasOnlyTrailerFormat =
     current.categories.format.length === 1 &&
@@ -709,6 +712,33 @@ function isTalkingAboutInsteadOfSameFormat(current, candidate) {
 
   const candidateTokens = Object.keys(candidate.contentTokens || {});
   return candidateTokens.some((token) => TALKING_ABOUT_TERMS.has(token));
+}
+
+function isSameTitleReupload(current, candidate) {
+  if (!current.categories.format.includes('trailer')) return false;
+  if (!candidate.categories.format.includes('trailer')) return false;
+
+  const currentTitle = canonicalTitleWords(current.title);
+  const candidateTitle = canonicalTitleWords(candidate.title);
+  if (!currentTitle.length || !candidateTitle.length) return false;
+
+  return currentTitle.join(' ') === candidateTitle.join(' ');
+}
+
+function canonicalTitleWords(title) {
+  const normalized = cleanTitle(title)
+    .toLowerCase()
+    .replace(/&/g, ' and ')
+    .replace(/[''""`]/g, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+
+  return normalized
+    .split(/\s+/)
+    .filter(Boolean)
+    .filter((word) => !STOPWORDS.has(word))
+    .filter((word) => !GENERIC_TERMS.has(word))
+    .filter((word) => !SAME_CHANNEL_WORDS.has(word));
 }
 
 function overlap(a = [], b = []) {
