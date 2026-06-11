@@ -1,6 +1,4 @@
-// ============================================================
-//  YT Fix — content.js
-// ============================================================
+
 
 console.log('YT Fix: loaded');
 
@@ -9,7 +7,7 @@ let watchedVideos  = {};
 let currentVideoId = null;
 let hasIntercepted = false;
 
-// ── Boot ─────────────────────────────────────────────────────
+
 chrome.storage.local.get(['mode', 'watchedVideos'], (data) => {
   currentMode   = data.mode          || 'off';
   watchedVideos = data.watchedVideos || {};
@@ -17,7 +15,6 @@ chrome.storage.local.get(['mode', 'watchedVideos'], (data) => {
   init();
 });
 
-// ── Messages from popup ───────────────────────────────────────
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg.type === 'MODE_CHANGE') {
     currentMode = msg.mode;
@@ -29,7 +26,7 @@ chrome.runtime.onMessage.addListener((msg) => {
   }
 });
 
-// ── Init ──────────────────────────────────────────────────────
+
 function init() {
   checkPage();
   let lastUrl = location.href;
@@ -52,7 +49,7 @@ function checkPage() {
   waitForVideo();
 }
 
-// ── Wait for <video> ──────────────────────────────────────────
+
 function waitForVideo() {
   const poll = setInterval(() => {
     const video = document.querySelector('video');
@@ -88,7 +85,6 @@ function attachVideoListeners(video) {
   video.addEventListener('pause', stopCounting);
   if (!video.paused) startCounting();
 
-  // Primary end detection
   video.addEventListener('ended', () => {
     stopCounting();
     console.log('YT Fix: ended event');
@@ -98,7 +94,6 @@ function attachVideoListeners(video) {
     }
   });
 
-  // Backup: near-end detection (catches cases where ended fires too late)
   video.addEventListener('timeupdate', () => {
     if (
       !hasIntercepted &&
@@ -114,7 +109,7 @@ function attachVideoListeners(video) {
   });
 }
 
-// ── Record watched video ──────────────────────────────────────
+
 function recordVideo(videoId) {
   chrome.storage.local.get(['watchedVideos'], (data) => {
     const all   = data.watchedVideos || {};
@@ -130,30 +125,42 @@ function recordVideo(videoId) {
   });
 }
 
-// ── Tags ──────────────────────────────────────────────────────
+
+const CHIP_NOISE = new Set([
+  'all','related','for you','recently uploaded','watched','new to you',
+  'from the series','from netflix','from hbo','from disney+','from amazon',
+  'trailers','movies','music','gaming','news','live','purchased',
+  'continue watching','top picks','posts'
+]);
+
 function extractTags() {
   const tags = [];
+
+
   tags.push(...titleToTags(document.title.toLowerCase()));
 
-  document.querySelectorAll('yt-chip-cloud-chip-renderer, tp-yt-paper-chip').forEach(chip => {
-    const t = chip.textContent.trim().toLowerCase();
-    if (t) tags.push(t);
-  });
 
-  const channel = document.querySelector('#channel-name a, ytd-channel-name a');
-  if (channel) tags.push(channel.textContent.trim().toLowerCase());
+  const channel = document.querySelector(
+    'ytd-channel-name yt-formatted-string a, #channel-name a, #owner #channel-name a'
+  );
+  if (channel) {
+    const ch = channel.textContent.trim().toLowerCase();
+
+    tags.push(...titleToTags(ch));
+  }
 
   return [...new Set(tags)];
 }
 
-function titleToTags(title) {
+function titleToTags(text) {
   const map = {
     music:       ['music','song','official audio','official video','lyrics','ft.','feat.','audio'],
     afrobeats:   ['afrobeats','afro','amapiano','afropop','wizkid','burna boy','rema','ruger','davido','don toliver','afroswing'],
     hiphop:      ['hip hop','hiphop','rap','drill','trap','freestyle','cypher','kendrick','drake'],
     rnb:         ['r&b','rnb','soul','neo soul'],
     indian:      ['bollywood','hindi','punjabi','tollywood','desi','bhangra','classical indian','tamil','telugu'],
-    horror:      ['horror','scary','thriller','jump scare','haunted','creepy','ghost'],
+    horror:      ['horror','scary','thriller','haunted','creepy','ghost','supernatural','paranormal','slasher','terror'],
+    trailer:     ['trailer','official trailer','teaser','clip','preview'],
     gaming:      ['gameplay',"let's play",'walkthrough','gaming','playthrough','speedrun','minecraft','fortnite','gta'],
     comedy:      ['funny','comedy','meme','prank','try not to laugh','fails','roast'],
     documentary: ['documentary','explained','history of','true story','real life','biography'],
@@ -164,53 +171,42 @@ function titleToTags(title) {
 
   const found = [];
   for (const [genre, keywords] of Object.entries(map)) {
-    if (keywords.some(k => title.includes(k))) found.push(genre);
+    if (keywords.some(k => text.includes(k))) found.push(genre);
   }
   return found;
 }
 
-// ── Autoplay interception ─────────────────────────────────────
 function handleAutoplay() {
   if (currentMode === 'off') return;
 
   const candidates = getSidebarVideos();
   const currentTags = extractTags();
 
-  console.log(`YT Fix: handleAutoplay | mode=${currentMode} | ${candidates.length} candidates | tags=${currentTags}`);
+  console.log(`YT Fix: handleAutoplay | mode=${currentMode} | ${candidates.length} candidates | tags=[${currentTags}]`);
+  if (candidates.length === 0) {
+    console.warn('YT Fix: ⚠️ 0 candidates — sidebar scraper found nothing. DOM may have changed.');
+    debugSidebar();
+    return;
+  }
+
   candidates.forEach(v => {
-    console.log(`  - "${v.title}" | seen=${!!watchedVideos[v.id]} | tags=[${v.tags}]`);
+    console.log(`  candidate: "${v.title}" | id=${v.id} | seen=${!!watchedVideos[v.id]} | tags=[${v.tags}]`);
   });
 
   let chosen = null;
 
   if (currentMode === 'seen') {
-    // Step 1: related AND watched — ideal
     chosen = candidates.find(v => isRelated(v.tags, currentTags) && watchedVideos[v.id]);
-
-    // Step 2: any watched video from the sidebar — still correct behaviour
+    if (!chosen) chosen = candidates.find(v => watchedVideos[v.id]);
     if (!chosen) {
-      chosen = candidates.find(v => watchedVideos[v.id]);
-      if (chosen) console.log('YT Fix: fallback — watched but not tag-matched');
-    }
-
-    // Step 3: nothing watched in sidebar at all — STAY, do not autoplay
-    if (!chosen) {
-      console.log('YT Fix: no watched videos in sidebar — blocking autoplay, staying on page');
+      console.log('YT Fix: no watched videos in sidebar — blocking autoplay');
       blockYouTubeAutoplay();
       return;
     }
 
   } else if (currentMode === 'new') {
-    // Step 1: related AND unseen — ideal
     chosen = candidates.find(v => isRelated(v.tags, currentTags) && !watchedVideos[v.id]);
-
-    // Step 2: any unseen video — still unseen, just not tag-matched
-    if (!chosen) {
-      chosen = candidates.find(v => !watchedVideos[v.id]);
-      if (chosen) console.log('YT Fix: fallback — unseen but not tag-matched');
-    }
-
-    // Step 3: everything in sidebar is already watched — block autoplay
+    if (!chosen) chosen = candidates.find(v => !watchedVideos[v.id]);
     if (!chosen) {
       console.log('YT Fix: all sidebar videos already seen — blocking autoplay');
       blockYouTubeAutoplay();
@@ -219,42 +215,88 @@ function handleAutoplay() {
   }
 
   if (chosen) {
-    console.log(`YT Fix: ▶ navigating to "${chosen.title}"`);
+    console.log(`YT Fix: ▶ navigating to "${chosen.title}" (${chosen.id})`);
     window.location.href = `https://www.youtube.com/watch?v=${chosen.id}`;
   }
 }
 
-// ── Block YouTube's own autoplay from firing ──────────────────
-// Pauses the video and cancels any countdown overlay YT shows.
+
+function getSidebarVideos() {
+  const items = [];
+  const seen  = new Set();
+
+
+  const SELECTORS = [
+    'ytd-compact-video-renderer',
+    'ytd-compact-movie-renderer',
+    'ytd-reel-item-renderer',
+    'ytd-rich-item-renderer',
+  
+    'ytd-watch-next-secondary-results-renderer ytd-compact-video-renderer',
+    '#secondary ytd-compact-video-renderer',
+    '#related ytd-compact-video-renderer',
+    '#related ytd-rich-item-renderer',
+  ];
+
+  for (const sel of SELECTORS) {
+    document.querySelectorAll(sel).forEach(el => {
+
+      const linkEl  = el.querySelector('a#thumbnail, a.ytd-thumbnail, a[href*="watch"]');
+      const titleEl = el.querySelector(
+        '#video-title, #video-title-link, h3 a, .title a, yt-formatted-string#video-title'
+      );
+
+      if (!linkEl || !titleEl) return;
+
+      const title = titleEl.textContent?.trim() || titleEl.getAttribute('title') || '';
+      if (!title) return;
+
+      let id = null;
+      try {
+        const url = new URL(linkEl.href, location.origin);
+        id = url.searchParams.get('v');
+      } catch(e) {}
+
+      if (!id || seen.has(id)) return;
+      seen.add(id);
+
+      items.push({ id, title, tags: titleToTags(title.toLowerCase()) });
+    });
+  }
+
+  return items;
+}
+
+
+function debugSidebar() {
+  console.log('YT Fix: 🔍 DOM debug — looking for any sidebar links with /watch...');
+  const allLinks = document.querySelectorAll('a[href*="/watch?v="]');
+  const found = [];
+  allLinks.forEach(a => {
+    try {
+      const id = new URL(a.href).searchParams.get('v');
+      const text = a.textContent?.trim() || a.getAttribute('title') || '(no text)';
+      if (id && id !== currentVideoId && !found.includes(id)) {
+        found.push(id);
+        console.log(`  link: "${text.slice(0,60)}" → ${id} | parent: ${a.parentElement?.tagName}.${a.parentElement?.className?.slice(0,40)}`);
+      }
+    } catch(e) {}
+  });
+  console.log(`YT Fix: found ${found.length} /watch links total in DOM`);
+}
+
 function blockYouTubeAutoplay() {
   const video = document.querySelector('video');
   if (video) video.pause();
 
-  // Cancel YT's autoplay countdown UI
-  const cancelBtn = document.querySelector('.ytp-autonav-endscreen-countdown-overlay button, .ytp-upnext-cancel-button');
+  const cancelBtn = document.querySelector(
+    '.ytp-autonav-endscreen-countdown-overlay button, .ytp-upnext-cancel-button'
+  );
   if (cancelBtn) cancelBtn.click();
 
-  console.log('YT Fix: autoplay blocked — no suitable video found');
+  console.log('YT Fix: autoplay blocked');
 }
 
-// ── Sidebar ───────────────────────────────────────────────────
-function getSidebarVideos() {
-  const items = [];
-  document.querySelectorAll('ytd-compact-video-renderer').forEach(el => {
-    const link  = el.querySelector('a#thumbnail');
-    const title = el.querySelector('#video-title')?.textContent?.trim() || '';
-    if (!link || !title) return;
-
-    let id = null;
-    try {
-      id = new URLSearchParams(new URL(link.href, location.origin).search).get('v');
-    } catch(e) {}
-    if (!id) return;
-
-    items.push({ id, title, tags: titleToTags(title.toLowerCase()) });
-  });
-  return items;
-}
 
 function isRelated(videoTags, currentTags) {
   if (!currentTags.length || !videoTags.length) return true;

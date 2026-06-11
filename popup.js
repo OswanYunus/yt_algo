@@ -7,7 +7,7 @@ const statusText = document.getElementById('status-text');
 const watchCount = document.getElementById('watch-count');
 const clearBtn   = document.getElementById('clear-btn');
 
-// Load saved state on open
+
 chrome.storage.local.get(['mode', 'watchedVideos'], (data) => {
   const mode    = data.mode || 'off';
   const watched = data.watchedVideos || {};
@@ -19,7 +19,7 @@ chrome.storage.local.get(['mode', 'watchedVideos'], (data) => {
   watchCount.textContent = Object.keys(watched).length;
 });
 
-// FIX: keep count live — refresh every second while popup is open
+
 setInterval(() => {
   chrome.storage.local.get(['watchedVideos'], (data) => {
     const watched = data.watchedVideos || {};
@@ -27,19 +27,18 @@ setInterval(() => {
   });
 }, 1000);
 
-// Toggle seen — mutually exclusive
+
 toggleSeen.addEventListener('change', () => {
   if (toggleSeen.checked) toggleNew.checked = false;
   saveMode(toggleSeen.checked ? 'seen' : 'off');
 });
 
-// Toggle new — mutually exclusive
+
 toggleNew.addEventListener('change', () => {
   if (toggleNew.checked) toggleSeen.checked = false;
   saveMode(toggleNew.checked ? 'new' : 'off');
 });
 
-// Clear watch history
 clearBtn.addEventListener('click', () => {
   chrome.storage.local.set({ watchedVideos: {} }, () => {
     watchCount.textContent = '0';
