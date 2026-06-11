@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>YT Fix</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      width: 320px;
+      background: #0f0f0f;
+      color: #f1f1f1;
+    }
+    .header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 16px 18px 14px;
+      border-bottom: 1px solid #272727;
+    }
+    .logo {
+      width: 30px; height: 30px;
+      background: #ff0000;
+      border-radius: 7px;
+      display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0;
+    }
+    .logo svg { width: 14px; height: 14px; fill: white; }
+    .app-title { font-size: 15px; font-weight: 600; color: #f1f1f1; }
+    .app-sub { font-size: 11px; color: #717171; margin-top: 1px; }
+    .body { padding: 14px 18px 18px; }
+    .section-label {
+      font-size: 10px; font-weight: 600;
+      letter-spacing: 0.08em; text-transform: uppercase;
+      color: #717171; margin-bottom: 10px;
+    }
+    .card {
+      background: #1a1a1a;
+      border: 1px solid #272727;
+      border-radius: 10px;
+      padding: 13px 14px;
+      margin-bottom: 8px;
+      transition: border-color 0.2s;
+    }
+    .card.active-seen { border-color: #3d7ef5; }
+    .card.active-new  { border-color: #2ba640; }
+    .card-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .card-icon {
+      width: 32px; height: 32px; border-radius: 8px;
+      display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0; font-size: 16px;
+    }
+    .icon-seen { background: #1a2a4a; }
+    .icon-new  { background: #1a3020; }
+    .card-text { flex: 1; }
+    .card-title { font-size: 13px; font-weight: 600; color: #f1f1f1; margin-bottom: 3px; }
+    .card-desc  { font-size: 11px; color: #aaa; line-height: 1.45; }
+    .switch { position: relative; width: 42px; height: 23px; flex-shrink: 0; }
+    .switch input { opacity: 0; width: 0; height: 0; }
+    .track {
+      position: absolute; inset: 0;
+      background: #333; border-radius: 12px;
+      cursor: pointer; transition: background 0.2s;
+    }
+    .track::before {
+      content: '';
+      position: absolute;
+      width: 17px; height: 17px;
+      background: #fff; border-radius: 50%;
+      top: 3px; left: 3px;
+      transition: transform 0.2s;
+    }
+    #toggle-seen:checked ~ .track { background: #3d7ef5; }
+    #toggle-new:checked  ~ .track { background: #2ba640; }
+    #toggle-seen:checked ~ .track::before,
+    #toggle-new:checked  ~ .track::before { transform: translateX(19px); }
+    .divider { height: 1px; background: #272727; margin: 12px 0; }
+    .status {
+      display: flex; align-items: center; gap: 8px;
+      padding: 9px 11px;
+      background: #1a1a1a; border: 1px solid #272727; border-radius: 8px;
+    }
+    .status-dot {
+      width: 7px; height: 7px; border-radius: 50%;
+      background: #444; flex-shrink: 0; transition: background 0.3s;
+    }
+    .status-text { font-size: 11px; color: #888; line-height: 1.4; }
+    .watched-count {
+      margin-top: 10px;
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .count-label { font-size: 11px; color: #717171; }
+    .count-val   { font-size: 11px; font-weight: 600; color: #aaa; }
+    .clear-btn {
+      font-size: 10px; color: #555;
+      background: none; border: none;
+      cursor: pointer; text-decoration: underline; padding: 0;
+    }
+    .clear-btn:hover { color: #888; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="logo">
+      <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+    </div>
+    <div>
+      <div class="app-title">YT Fix</div>
+      <div class="app-sub">Autoplay controller</div>
+    </div>
+  </div>
+
+  <div class="body">
+    <div class="section-label">Autoplay mode</div>
+
+    <div class="card" id="card-seen">
+      <div class="card-row">
+        <div class="card-icon icon-seen">🔁</div>
+        <div class="card-text">
+          <div class="card-title">Play videos I've seen</div>
+          <div class="card-desc">Next video stays related — same genre, from your history</div>
+        </div>
+        <label class="switch">
+          <input type="checkbox" id="toggle-seen" />
+          <span class="track"></span>
+        </label>
+      </div>
+    </div>
+
+    <div class="card" id="card-new">
+      <div class="card-row">
+        <div class="card-icon icon-new">✨</div>
+        <div class="card-text">
+          <div class="card-title">Play videos I haven't seen</div>
+          <div class="card-desc">Next video stays related — same genre, but fresh to you</div>
+        </div>
+        <label class="switch">
+          <input type="checkbox" id="toggle-new" />
+          <span class="track"></span>
+        </label>
+      </div>
+    </div>
+
+    <div class="divider"></div>
+
+    <div class="status">
+      <div class="status-dot" id="status-dot"></div>
+      <div class="status-text" id="status-text">Both off — YouTube controls autoplay</div>
+    </div>
+
+    <div class="watched-count">
+      <span class="count-label">Videos tracked: <span class="count-val" id="watch-count">0</span></span>
+      <button class="clear-btn" id="clear-btn">clear history</button>
+    </div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
