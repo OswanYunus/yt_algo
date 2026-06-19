@@ -7,7 +7,7 @@
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-      width: 320px;
+      width: 500px;
       background: #0f0f0f;
       color: #f1f1f1;
     }
@@ -28,6 +28,43 @@
     .logo svg { width: 14px; height: 14px; fill: white; }
     .app-title { font-size: 15px; font-weight: 600; color: #f1f1f1; }
     .app-sub { font-size: 11px; color: #717171; margin-top: 1px; }
+    
+    .tabs {
+      display: flex;
+      border-bottom: 1px solid #272727;
+      background: #0f0f0f;
+    }
+    .tab-btn {
+      flex: 1;
+      padding: 12px;
+      background: transparent;
+      border: none;
+      color: #717171;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.2s;
+      border-bottom: 2px solid transparent;
+      text-align: center;
+    }
+    .tab-btn:hover {
+      color: #a0a0a0;
+    }
+    .tab-btn.active {
+      color: #f1f1f1;
+      border-bottom-color: #ff0000;
+    }
+    
+    .tab-content {
+      display: none;
+      padding: 14px 18px 18px;
+      max-height: 600px;
+      overflow-y: auto;
+    }
+    .tab-content.active {
+      display: block;
+    }
+    
     .body { padding: 14px 18px 18px; }
     .section-label {
       font-size: 10px; font-weight: 600;
@@ -37,7 +74,7 @@
     .card {
       background: #1a1a1a;
       border: 1px solid #272727;
-      border-radius: 10px;
+      border-radius: 8px;
       padding: 13px 14px;
       margin-bottom: 8px;
       transition: border-color 0.2s;
@@ -48,10 +85,10 @@
     .card-icon {
       width: 32px; height: 32px; border-radius: 8px;
       display: flex; align-items: center; justify-content: center;
-      flex-shrink: 0; font-size: 16px;
+      flex-shrink: 0; font-size: 12px; font-weight: 700;
     }
-    .icon-seen { background: #1a2a4a; }
-    .icon-new  { background: #1a3020; }
+    .icon-seen { background: #1a2a4a; color: #8db2ff; }
+    .icon-new  { background: #1a3020; color: #8be09b; }
     .card-text { flex: 1; }
     .card-title { font-size: 13px; font-weight: 600; color: #f1f1f1; margin-bottom: 3px; }
     .card-desc  { font-size: 11px; color: #aaa; line-height: 1.45; }
@@ -85,9 +122,337 @@
       background: #444; flex-shrink: 0; transition: background 0.3s;
     }
     .status-text { font-size: 11px; color: #888; line-height: 1.4; }
+    .next-card {
+      display: grid;
+      grid-template-columns: 96px minmax(0, 1fr);
+      gap: 10px;
+      width: 100%;
+      padding: 10px;
+      background: #1a1a1a;
+      border: 1px solid #272727;
+      border-radius: 8px;
+      color: inherit;
+      text-align: left;
+      cursor: pointer;
+    }
+    .next-card[hidden] { display: none; }
+    .next-card:hover { border-color: #3ea6ff; }
+    .next-empty {
+      padding: 10px 11px;
+      background: #1a1a1a;
+      border: 1px solid #272727;
+      border-radius: 8px;
+      font-size: 11px;
+      line-height: 1.4;
+      color: #888;
+    }
+    .next-empty[hidden] { display: none; }
+    .next-thumb {
+      width: 96px;
+      aspect-ratio: 16 / 9;
+      object-fit: cover;
+      border-radius: 6px;
+      background: #222;
+    }
+    .next-copy {
+      min-width: 0;
+      display: grid;
+      gap: 4px;
+      align-content: start;
+    }
+    .next-title {
+      overflow: hidden;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      font-size: 12px;
+      font-weight: 600;
+      line-height: 1.25;
+      color: #f1f1f1;
+    }
+    .next-meta {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 10px;
+      color: #aaa;
+    }
+    .next-reason {
+      font-size: 10px;
+      line-height: 1.35;
+      color: #8f8f8f;
+    }
     .watched-count {
       margin-top: 10px;
       display: flex; align-items: center; justify-content: space-between;
+    }
+    .count-label { font-size: 11px; color: #717171; }
+    .count-val   { font-size: 11px; font-weight: 600; color: #aaa; }
+    .clear-btn {
+      font-size: 10px; color: #555;
+      background: none; border: none;
+      cursor: pointer; text-decoration: underline; padding: 0;
+    }
+    .clear-btn:hover { color: #888; }
+    
+    /* Settings tab styles */
+    .settings-section {
+      margin-bottom: 20px;
+    }
+    .settings-section h3 {
+      font-size: 12px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: #717171;
+      margin-bottom: 10px;
+    }
+    .genre-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 8px;
+    }
+    .genre-item {
+      padding: 8px;
+      background: #1a1a1a;
+      border: 1px solid #272727;
+      border-radius: 6px;
+      display: flex;
+      align-items: center;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .genre-item:hover {
+      background: #272727;
+      border-color: #3d3d3d;
+    }
+    .genre-item input {
+      margin-right: 8px;
+      cursor: pointer;
+    }
+    .genre-item label {
+      font-size: 12px;
+      cursor: pointer;
+      flex: 1;
+    }
+    .category-header {
+      font-size: 13px;
+      font-weight: 600;
+      color: #f1f1f1;
+      margin: 12px 0 8px 0;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .subcategory-header {
+      font-size: 12px;
+      font-weight: 500;
+      color: #a0a0a0;
+      margin: 10px 0 6px 0;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    
+    .blacklist-section {
+      margin-top: 15px;
+    }
+    .channel-input {
+      width: 100%;
+      padding: 8px;
+      background: #1a1a1a;
+      border: 1px solid #272727;
+      border-radius: 6px;
+      color: #f1f1f1;
+      font-size: 12px;
+      margin-bottom: 8px;
+    }
+    .channel-input::placeholder {
+      color: #555;
+    }
+    .add-btn {
+      width: 100%;
+      padding: 8px;
+      background: #ff0000;
+      color: white;
+      border: none;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    .add-btn:hover {
+      background: #cc0000;
+    }
+    .channel-list {
+      margin-top: 12px;
+    }
+    .channel-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 8px;
+      background: #1a1a1a;
+      border: 1px solid #272727;
+      border-radius: 6px;
+      margin-bottom: 6px;
+      font-size: 12px;
+    }
+    .channel-remove {
+      background: none;
+      border: none;
+      color: #888;
+      cursor: pointer;
+      font-size: 12px;
+      padding: 0 4px;
+      transition: color 0.2s;
+    }
+    .channel-remove:hover {
+      color: #ff6b6b;
+    }
+    
+    .save-btn {
+      width: 100%;
+      padding: 10px;
+      background: #ff0000;
+      color: white;
+      border: none;
+      border-radius: 6px;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: background 0.2s;
+      margin-top: 15px;
+    }
+    .save-btn:hover {
+      background: #cc0000;
+    }
+    
+    .notification {
+      padding: 10px;
+      background: #1a3020;
+      border: 1px solid #2ba640;
+      border-radius: 6px;
+      color: #8be09b;
+      font-size: 12px;
+      margin-bottom: 10px;
+      display: none;
+    }
+    .notification.show {
+      display: block;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="logo">
+      <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+    </div>
+    <div>
+      <div class="app-title">YT Fix</div>
+      <div class="app-sub">Autoplay controller</div>
+    </div>
+  </div>
+
+  <div class="tabs">
+    <button class="tab-btn active" data-tab="autoplay">Autoplay</button>
+    <button class="tab-btn" data-tab="preferences">Preferences</button>
+    <button class="tab-btn" data-tab="blacklist">Blacklist</button>
+  </div>
+
+  <!-- AUTOPLAY TAB -->
+  <div class="tab-content active" id="tab-autoplay">
+    <div class="section-label">Autoplay mode</div>
+
+    <div class="card" id="card-seen">
+      <div class="card-row">
+        <div class="card-icon icon-seen">R</div>
+        <div class="card-text">
+          <div class="card-title">Play videos I've seen</div>
+          <div class="card-desc">Next video stays related - same genre, from your history</div>
+        </div>
+        <label class="switch">
+          <input type="checkbox" id="toggle-seen" />
+          <span class="track"></span>
+        </label>
+      </div>
+    </div>
+
+    <div class="card" id="card-new">
+      <div class="card-row">
+        <div class="card-icon icon-new">N</div>
+        <div class="card-text">
+          <div class="card-title">Play videos I haven't seen</div>
+          <div class="card-desc">Next video stays related - same genre, but fresh to you</div>
+        </div>
+        <label class="switch">
+          <input type="checkbox" id="toggle-new" />
+          <span class="track"></span>
+        </label>
+      </div>
+    </div>
+
+    <div class="divider"></div>
+
+    <div class="status">
+      <div class="status-dot" id="status-dot"></div>
+      <div class="status-text" id="status-text">Both off - YouTube controls autoplay</div>
+    </div>
+
+    <div class="divider"></div>
+
+    <div class="section-label">Up next</div>
+    <button class="next-card" id="next-card" hidden>
+      <img class="next-thumb" id="next-thumb" alt="" />
+      <span class="next-copy">
+        <span class="next-title" id="next-title"></span>
+        <span class="next-meta" id="next-meta"></span>
+        <span class="next-reason" id="next-reason"></span>
+      </span>
+    </button>
+    <div class="next-empty" id="next-empty">The next pick appears here after about 10 seconds of playback.</div>
+
+    <div class="watched-count">
+      <span class="count-label">Videos tracked: <span class="count-val" id="watch-count">0</span></span>
+      <button class="clear-btn" id="clear-btn">clear history</button>
+    </div>
+  </div>
+
+  <!-- PREFERENCES TAB -->
+  <div class="tab-content" id="tab-preferences">
+    <div class="notification" id="pref-notification"></div>
+    <div class="section-label">Select content genres</div>
+    <p style="font-size: 11px; color: #888; margin-bottom: 15px;">Choose the types of content you want to see on your YouTube feed. Your selections will appear after you refresh the page.</p>
+    <div id="preferences-container">
+      <!-- Generated by JavaScript -->
+    </div>
+    <button class="save-btn" id="save-prefs-btn">Save Preferences & Refresh Page</button>
+  </div>
+
+  <!-- BLACKLIST TAB -->
+  <div class="tab-content" id="tab-blacklist">
+    <div class="notification" id="blacklist-notification"></div>
+    <div class="section-label">Block channels</div>
+    <p style="font-size: 11px; color: #888; margin-bottom: 15px;">Add channel IDs or names of channels you never want to see on your YouTube feed.</p>
+    
+    <div class="blacklist-section">
+      <h3>Add to blacklist</h3>
+      <input type="text" class="channel-input" id="channel-input" placeholder="Enter channel ID or name" />
+      <button class="add-btn" id="add-channel-btn">Add Channel</button>
+    </div>
+
+    <div class="channel-list" id="channel-list">
+      <!-- Generated by JavaScript -->
+    </div>
+
+    <button class="save-btn" id="save-blacklist-btn">Save & Refresh Page</button>
+  </div>
+
+  <script src="preferences.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>
+
     }
     .count-label { font-size: 11px; color: #717171; }
     .count-val   { font-size: 11px; font-weight: 600; color: #aaa; }
@@ -115,10 +480,10 @@
 
     <div class="card" id="card-seen">
       <div class="card-row">
-        <div class="card-icon icon-seen">🔁</div>
+        <div class="card-icon icon-seen">R</div>
         <div class="card-text">
           <div class="card-title">Play videos I've seen</div>
-          <div class="card-desc">Next video stays related — same genre, from your history</div>
+          <div class="card-desc">Next video stays related - same genre, from your history</div>
         </div>
         <label class="switch">
           <input type="checkbox" id="toggle-seen" />
@@ -129,10 +494,10 @@
 
     <div class="card" id="card-new">
       <div class="card-row">
-        <div class="card-icon icon-new">✨</div>
+        <div class="card-icon icon-new">N</div>
         <div class="card-text">
           <div class="card-title">Play videos I haven't seen</div>
-          <div class="card-desc">Next video stays related — same genre, but fresh to you</div>
+          <div class="card-desc">Next video stays related - same genre, but fresh to you</div>
         </div>
         <label class="switch">
           <input type="checkbox" id="toggle-new" />
@@ -145,8 +510,21 @@
 
     <div class="status">
       <div class="status-dot" id="status-dot"></div>
-      <div class="status-text" id="status-text">Both off — YouTube controls autoplay</div>
+      <div class="status-text" id="status-text">Both off - YouTube controls autoplay</div>
     </div>
+
+    <div class="divider"></div>
+
+    <div class="section-label">Up next</div>
+    <button class="next-card" id="next-card" hidden>
+      <img class="next-thumb" id="next-thumb" alt="" />
+      <span class="next-copy">
+        <span class="next-title" id="next-title"></span>
+        <span class="next-meta" id="next-meta"></span>
+        <span class="next-reason" id="next-reason"></span>
+      </span>
+    </button>
+    <div class="next-empty" id="next-empty">The next pick appears here after about 10 seconds of playback.</div>
 
     <div class="watched-count">
       <span class="count-label">Videos tracked: <span class="count-val" id="watch-count">0</span></span>

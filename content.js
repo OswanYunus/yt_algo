@@ -9,29 +9,144 @@ let candidateCacheVideoId = null;
 let prepareTimer = null;
 let activeVideoController = null;
 let activeWatchSession = 0;
+let nextPreviewCandidate = null; let overlayShown = false; // track overlay display
+let autoImportChannelId = null; // optional stored channel id for auto‑import
 
 const MAX_CANDIDATES_TO_ENRICH = 60;
 const MAX_SEARCH_QUERIES = 4;
 
-chrome.storage.local.get(['mode', 'watchedVideos'], (data) => {
+// Initialize preferences on first load
+initializePreferences(() => {
+  console.log('YT Fix: Preferences initialized');
+  checkAndShowFirstTimeSetup();
+  
+  // Initialize content filtering
+  setTimeout(initializeContentFiltering, 1000);
+});
+
+safeStorageGet(['mode', 'watchedVideos', 'autoImportChannelId'], (data) => {
   currentMode = data.mode || 'off';
   watchedVideos = normalizeWatchedVideos(data.watchedVideos || {});
+  autoImportChannelId = data.autoImportChannelId || null;
   console.log(`YT Fix: mode=${currentMode}, tracked=${Object.keys(watchedVideos).length} videos`);
+  if (autoImportChannelId) {
+    console.log('YT Fix: auto‑importing channel history for', autoImportChannelId);
+    importChannelHistory(autoImportChannelId);
+  }
   init();
 });
 
-chrome.runtime.onMessage.addListener((msg) => {
-  if (msg.type === 'MODE_CHANGE') {
-    currentMode = msg.mode;
-    console.log('YT Fix: mode ->', currentMode);
-    prepareCandidatesSoon();
+if (isExtensionContextAlive()) {
+  chrome.runtime.onMessage.addListener((msg) => {
+    if (msg.type === 'MODE_CHANGE') {
+      currentMode = msg.mode;
+      console.log('YT Fix: mode ->', currentMode);
+      if (currentMode === 'off') clearNextPreview();
+    }
+    if (msg.type === 'IMPORT_CHANNEL_HISTORY') {
+      const channelId = msg.channelId;
+      if (channelId) importChannelHistory(channelId);
+    }
+    if (msg.type === 'CLEAR_HISTORY') {
+      watchedVideos = {};
+      candidateCache = null;
+      clearNextPreview();
+      console.log('YT Fix: history cleared');
+    }
+    if (msg.type === 'PREFERENCES_CHANGED') {
+      console.log('YT Fix: preferences changed, refiltering content');
+      filterCurrentPageVideos();
+    }
+    if (msg.type === 'BLACKLIST_CHANGED') {
+      console.log('YT Fix: blacklist changed, refiltering content');
+      filterCurrentPageVideos();
+    }
+  });
+}
+
+
+
+// Helper: fetch all videos from a channel, following continuation tokens for pagination.
+async function fetchAllChannelVideos(channelId) {
+  const baseUrl = `https://www.youtube.com/channel/${channelId}/videos?view=0&sort=dd&flow=grid`;
+  const videos = [];
+  let html = await (await fetch(baseUrl)).text();
+  videos.push(...extractVideoLinksFromHtml(html));
+  let continuationMatch = html.match(/"continuation":"([^\"]+)"/);
+  while (continuationMatch && continuationMatch[1]) {
+    const token = continuationMatch[1];
+    const jsonUrl = `https://www.youtube.com/browse_ajax?continuation=${token}&action_get=1`;
+    const resp = await fetch(jsonUrl);
+    if (!resp.ok) break;
+    const json = await resp.json();
+    // Some responses nest the HTML; try common fields.
+    const innerHtml = json?.content_html || json?.response?.contents_html || '';
+    if (!innerHtml) break;
+    videos.push(...extractVideoLinksFromHtml(innerHtml));
+    continuationMatch = innerHtml.match(/"continuation":"([^\"]+)"/);
   }
-  if (msg.type === 'CLEAR_HISTORY') {
-    watchedVideos = {};
-    candidateCache = null;
-    console.log('YT Fix: history cleared');
+  return videos;
+}
+
+function isExtensionContextAlive() {
+  return Boolean(
+    typeof chrome !== 'undefined' &&
+    chrome.runtime &&
+    chrome.runtime.id &&
+    chrome.storage &&
+    chrome.storage.local
+  );
+}
+
+function stopThisContentScript() {
+  clearTimeout(prepareTimer);
+  activeWatchSession++;
+  if (activeVideoController) activeVideoController.abort();
+  activeVideoController = null;
+  currentMode = 'off';
+}
+
+function safeStorageGet(keys, callback) {
+  if (!isExtensionContextAlive()) {
+    stopThisContentScript();
+    return;
   }
-});
+
+  try {
+    chrome.storage.local.get(keys, (data) => {
+      if (chrome.runtime.lastError) {
+        stopThisContentScript();
+        console.warn('YT Fix: storage get skipped:', chrome.runtime.lastError.message);
+        return;
+      }
+      callback(data || {});
+    });
+  } catch (e) {
+    stopThisContentScript();
+    console.warn('YT Fix: storage get failed:', e.message);
+  }
+}
+
+function safeStorageSet(value, callback) {
+  if (!isExtensionContextAlive()) {
+    stopThisContentScript();
+    return;
+  }
+
+  try {
+    chrome.storage.local.set(value, () => {
+      if (chrome.runtime.lastError) {
+        stopThisContentScript();
+        console.warn('YT Fix: storage set skipped:', chrome.runtime.lastError.message);
+        return;
+      }
+      if (callback) callback();
+    });
+  } catch (e) {
+    stopThisContentScript();
+    console.warn('YT Fix: storage set failed:', e.message);
+  }
+}
 
 function init() {
   checkPage();
@@ -45,6 +160,11 @@ function init() {
 }
 
 function checkPage() {
+  if (!isExtensionContextAlive()) {
+    stopThisContentScript();
+    return;
+  }
+
   const videoId = getVideoId();
   if (!videoId || videoId === currentVideoId) return;
 
@@ -53,9 +173,10 @@ function checkPage() {
   hasIntercepted = false;
   candidateCache = null;
   candidateCacheVideoId = null;
+  nextPreviewCandidate = null;
+  clearNextPreview();
   activeWatchSession++;
   waitForVideo();
-  prepareCandidatesSoon();
 }
 
 function waitForVideo() {
@@ -74,7 +195,7 @@ function attachVideoListeners(video) {
   const signal = activeVideoController.signal;
   const sessionId = activeWatchSession;
   const attachedVideoId = currentVideoId;
-  let watchTime = 0;
+  let currentWatchTime = 0;
   let countingInterval = null;
   let hasRecorded = false;
 
@@ -86,9 +207,18 @@ function attachVideoListeners(video) {
         return;
       }
 
-      watchTime++;
+      currentWatchTime++;
+      if (currentWatchTime === 10 && currentMode !== 'off') {
+        prepareCandidateCache().catch((e) => console.warn('YT Fix: candidate preparation failed', e));
+        // Show overlay if candidate already selected
+        if (nextPreviewCandidate && !overlayShown) {
+          renderNextOverlay(nextPreviewCandidate);
+          overlayShown = true;
+        }
+      }
+
       const recordAfter = getRecordThreshold(video);
-      if (watchTime >= recordAfter && !hasRecorded) {
+      if (currentWatchTime >= recordAfter && !hasRecorded) {
         hasRecorded = true;
         recordVideo(attachedVideoId);
       }
@@ -100,6 +230,69 @@ function attachVideoListeners(video) {
     countingInterval = null;
   };
 
+  // Detect native HTML5 `loop` changes reliably (handles property-only toggles
+  // such as right-click -> Loop) by polling the `video.loop` property.
+  try {
+    let previousLoop = Boolean(video.loop);
+    const loopPoll = setInterval(() => {
+      if (sessionId !== activeWatchSession || attachedVideoId !== currentVideoId) {
+        clearInterval(loopPoll);
+        return;
+      }
+      const isLoop = Boolean(video.loop);
+      if (isLoop === previousLoop) return;
+      previousLoop = isLoop;
+
+      if (isLoop) {
+        console.log('YT Fix: loop enabled on', attachedVideoId);
+        // Save existing preview so it can be restored later
+        safeStorageGet(['nextVideoPreview'], (data) => {
+          const existing = data.nextVideoPreview || null;
+          safeStorageSet({ prevNextVideoPreview: existing }, () => {
+            const title = getCurrentVideoProfile().title || document.title.replace(' - YouTube', '');
+            safeStorageSet({
+              nextVideoPreview: {
+                id: attachedVideoId,
+                title,
+                url: `https://www.youtube.com/watch?v=${attachedVideoId}`,
+                thumbnail: `https://i.ytimg.com/vi/${attachedVideoId}/hqdefault.jpg`,
+                reason: 'Loop enabled on this video',
+                mode: 'loop',
+                modeLabel: 'Looping this video',
+                score: null,
+                source: 'loop',
+                currentVideoId: attachedVideoId,
+                updatedAt: Date.now()
+              }
+            });
+          });
+        });
+      } else {
+        console.log('YT Fix: loop disabled on', attachedVideoId);
+        // Loop turned off: restore previous preview if available, otherwise clear and recompute
+        safeStorageGet(['prevNextVideoPreview'], (data) => {
+          const prev = data.prevNextVideoPreview;
+          if (prev) {
+            safeStorageSet({ nextVideoPreview: prev, prevNextVideoPreview: null });
+          } else {
+            clearNextPreview();
+            safeStorageSet({ prevNextVideoPreview: null });
+            // Recompute algorithmic preview asynchronously
+            prepareCandidateCache().then((candidates) => {
+              resolveCurrentProfile(attachedVideoId).then((profile) => {
+                updateNextPreviewFromCandidates(candidates, profile);
+              }).catch(() => {});
+            }).catch(() => {});
+          }
+        });
+      }
+    }, 500);
+
+    signal.addEventListener('abort', () => clearInterval(loopPoll));
+  } catch (e) {
+    console.warn('YT Fix: loop polling failed', e);
+  }
+
   video.addEventListener('play', startCounting, { signal });
   video.addEventListener('pause', stopCounting, { signal });
   if (!video.paused) startCounting();
@@ -107,6 +300,12 @@ function attachVideoListeners(video) {
   video.addEventListener('ended', () => {
     stopCounting();
     if (sessionId !== activeWatchSession || attachedVideoId !== currentVideoId) return;
+    // If the user enabled native loop on the video element, respect it and do not intercept.
+    if (video.loop) {
+      console.log('YT Fix: native loop enabled; skipping interception on ended');
+      return;
+    }
+
     if (currentMode !== 'off' && !hasIntercepted) {
       hasIntercepted = true;
       handleAutoplay();
@@ -115,6 +314,9 @@ function attachVideoListeners(video) {
 
   video.addEventListener('timeupdate', () => {
     if (sessionId !== activeWatchSession || attachedVideoId !== currentVideoId) return;
+    // Respect native loop if user enabled it on the HTML5 video element.
+    if (video.loop) return;
+
     if (
       !hasIntercepted &&
       currentMode !== 'off' &&
@@ -138,7 +340,7 @@ function recordVideo(videoId) {
   if (!videoId) return;
   if (videoId !== currentVideoId) return;
 
-  chrome.storage.local.get(['watchedVideos'], async (data) => {
+  safeStorageGet(['watchedVideos'], async (data) => {
     if (videoId !== currentVideoId) return;
 
     const all = normalizeWatchedVideos(data.watchedVideos || {});
@@ -156,7 +358,7 @@ function recordVideo(videoId) {
     };
 
     watchedVideos = all;
-    chrome.storage.local.set({ watchedVideos: all }, () => {
+    safeStorageSet({ watchedVideos: all }, () => {
       console.log(`YT Fix: recorded "${profile.title}" | tags=[${profile.tags.join(', ')}] | total=${Object.keys(all).length}`);
     });
   });
@@ -230,7 +432,14 @@ const CATEGORY_RULES = {
     documentary: ['documentary', 'docuseries', 'true story', 'based on true events']
   },
   musicGenre: {
-    afrobeats: ['afrobeats', 'afrobeat', 'afropop', 'afro pop', 'amapiano', 'bongo flava', 'gengetone', 'dancehall africa'],
+    afrobeats: [
+      'afrobeats', 'afrobeat', 'afropop', 'afro pop', 'amapiano', 'bongo flava',
+      'gengetone', 'dancehall africa', 'afro fusion', 'naija', 'bongo', 'azonto',
+      'kuduro', 'kizomba', 'burna boy', 'wizkid', 'davido', 'rema', 'ayra starr',
+      'tems', 'tiwa savage', 'asake', 'kizz daniel', 'omah lay', 'fireboy dml',
+      'diamond platnumz', 'sauti sol', 'harmonize', 'zuchu', 'rayvanny', 'joeboy',
+      'ckay', 'oxlade', 'tekno', 'yemi alade', 'mr eazi'
+    ],
     hiphop: ['hip hop', 'hip-hop', 'hiphop', 'rap', 'trap', 'drill', 'freestyle', 'cypher'],
     rnb: ['r&b', 'rnb', 'soul', 'neo soul', 'slow jam'],
     pop: ['pop', 'dance pop', 'electropop'],
@@ -301,7 +510,7 @@ const GENERIC_TERMS = new Set([
   'official', 'video', 'audio', 'trailer', 'teaser', 'clip', 'movie', 'film',
   'music', 'song', 'lyrics', 'youtube', 'netflix', 'hbo', 'disney', 'amazon',
   'universal', 'pictures', 'studios', 'channel', 'new', 'full', 'hd', '4k',
-  'extended', 'final', 'exclusive', 'scene', 'preview'
+  'extended', 'final', 'exclusive', 'scene', 'preview', 'promo', 'spot'
 ]);
 
 const STOPWORDS = new Set([
@@ -536,6 +745,7 @@ async function prepareCandidateCache() {
   candidateCache = candidates;
   candidateCacheVideoId = currentVideoId;
   console.log(`YT Fix: prepared ${candidates.length} candidates for ${currentMode} mode`);
+  updateNextPreviewFromCandidates(candidates, currentProfile);
   return candidates;
 }
 
@@ -563,6 +773,7 @@ async function handleAutoplay() {
   });
 
   const best = ranked.find((item) => item.gateOk);
+  showNextPreview(best, currentProfile);
   if (!best) {
     console.log('YT Fix: no strongly related candidate found; blocking autoplay');
     blockYouTubeAutoplay();
@@ -592,28 +803,54 @@ function rankCandidates(candidates, currentProfile, mode) {
 }
 
 function relatednessScore(current, candidate, rawCandidate = {}) {
-  let score = cosine(current.tokens, candidate.tokens) * 18;
-  score += cosine(current.contentTokens, candidate.contentTokens) * 18;
+  let score = cosine(current.tokens, candidate.tokens) * 20; // increased importance of title tokens
+  score += cosine(current.contentTokens, candidate.contentTokens) * 20; // increased content similarity
 
   for (const [group, weight] of Object.entries(CATEGORY_WEIGHTS)) {
-    score += overlap(current.categories[group], candidate.categories[group]) * weight;
+    const boost = (group === 'movieGenre' || group === 'musicGenre' || group === 'gamingGenre') ? weight * 1.5 : weight;
+    score += overlap(current.categories[group], candidate.categories[group]) * boost;
   }
 
-  score += overlap(current.entities, candidate.entities) * 6;
-  score += overlap(current.tags, candidate.tags) * 3;
-  score += softTokenOverlap(current.contentTokens, candidate.contentTokens) * 8;
+  score += overlap(current.entities, candidate.entities) * 8;
+  score += overlap(current.tags, candidate.tags) * 5;
+  score += softTokenOverlap(current.contentTokens, candidate.contentTokens) * 10;
 
   const sameChannel = normalizeName(current.channel) && normalizeName(current.channel) === normalizeName(candidate.channel);
-  if (sameChannel) score += hasCoreCategoryOverlap(current, candidate) ? 1.5 : -5;
+  if (sameChannel) score -= 8; // stronger negative bias
 
-  if (rawCandidate.source === 'history') score += 1;
-  if (rawCandidate.source === 'search') score += 0.4;
-  if (rawCandidate.source === 'sidebar') score += 0.2;
+  if (rawCandidate.source === 'history') score += 2;
+  if (rawCandidate.source === 'search') score += 0.6;
+  if (rawCandidate.source === 'sidebar') score += 0.3; // Trailer‐specific logic — GENRE FIRST, format second
+  const currentIsTrailer = current.categories.format && current.categories.format.includes('trailer');
+  const candidateIsTrailer = candidate.categories.format && candidate.categories.format.includes('trailer');
+  const currentHasGenre = current.categories.movieGenre.length > 0;
+  if (currentIsTrailer && currentHasGenre) {
+    // Current video is a genre trailer (e.g. horror trailer)
+    const genreMatch = overlap(current.categories.movieGenre, candidate.categories.movieGenre) > 0;
+    if (candidateIsTrailer && genreMatch) {
+      score += 15; // best case: same genre + same format
+    } else if (!candidateIsTrailer && genreMatch) {
+      score -= 5; // same genre but wrong format — mild penalty
+    } else if (candidateIsTrailer && !genreMatch) {
+      score -= 20; // same format but WRONG genre — this is the afrobeats-trailer problem
+    } else {
+      score -= 30; // wrong genre AND wrong format
+    }
+  } else if (currentIsTrailer && !currentHasGenre) {
+    // Current is a trailer but we couldn't detect a genre — light format preference
+    if (candidateIsTrailer) {
+      score += 3;
+    } else {
+      score -= 10;
+    }
+  }
 
-  if (isClearlyWrongGenre(current, candidate)) score -= 18;
-  if (isWrongFormatExperience(current, candidate)) score -= 35;
-  if (isTalkingAboutInsteadOfSameFormat(current, candidate)) score -= 18;
-  if (isSameTitleReupload(current, candidate)) score -= 45;
+  if (isClearlyWrongGenre(current, candidate)) score -= 20;
+  if (isWrongFormatExperience(current, candidate)) score -= 40;
+  if (isTalkingAboutInsteadOfSameFormat(current, candidate)) score -= 20;
+  if (isSameTitleOrEpisodeVariant(current, candidate)) score -= 40; // reduced penalty to allow genre‑related repeats
+  if (isSameTitleReupload(current, candidate)) score -= 55;
+  if (hasStrongGenreLane(current) && !hasSameGenreLane(current, candidate)) score -= 25;
   return score;
 }
 
@@ -622,7 +859,9 @@ function passesRelatednessGate(current, candidate, score) {
   if (isClearlyWrongGenre(current, candidate)) return false;
   if (isWrongFormatExperience(current, candidate)) return false;
   if (isTalkingAboutInsteadOfSameFormat(current, candidate)) return false;
+  if (isSameTitleOrEpisodeVariant(current, candidate)) return false;
   if (isSameTitleReupload(current, candidate)) return false;
+  if (hasStrongGenreLane(current) && !hasSameGenreLane(current, candidate)) return false;
 
   const currentHasOnlyTrailerFormat =
     current.categories.format.length === 1 &&
@@ -660,6 +899,26 @@ function hasCoreCategoryOverlap(a, b) {
   );
 }
 
+function hasStrongGenreLane(profile) {
+  return Boolean(
+    profile.categories.movieGenre.length ||
+    profile.categories.musicGenre.length ||
+    profile.categories.gamingGenre.length ||
+    profile.categories.comedyGenre.length ||
+    profile.categories.podcastGenre.length
+  );
+}
+
+function hasSameGenreLane(a, b) {
+  return (
+    overlap(a.categories.movieGenre, b.categories.movieGenre) > 0 ||
+    overlap(a.categories.musicGenre, b.categories.musicGenre) > 0 ||
+    overlap(a.categories.gamingGenre, b.categories.gamingGenre) > 0 ||
+    overlap(a.categories.comedyGenre, b.categories.comedyGenre) > 0 ||
+    overlap(a.categories.podcastGenre, b.categories.podcastGenre) > 0
+  );
+}
+
 function matchingFormats(a, b) {
   const formatOverlap = overlap(a.categories.format, b.categories.format);
   if (formatOverlap === 0) return false;
@@ -689,8 +948,9 @@ function isClearlyWrongGenre(current, candidate) {
   if (musicA.length && musicB.length && overlap(musicA, musicB) === 0) return true;
   if (gameA.length && gameB.length && overlap(gameA, gameB) === 0) return true;
   if (podcastA.length && podcastB.length && overlap(podcastA, podcastB) === 0) return true;
-  if (movieA.length && musicB.length && !candidate.categories.format.includes('trailer')) return true;
-  if (musicA.length && movieB.length && !current.categories.format.includes('trailer')) return true;
+  // A movie-genre video vs a music-genre video is always a genre clash — even if both are trailers
+  if (movieA.length && musicB.length) return true;
+  if (musicA.length && movieB.length) return true;
   return false;
 }
 
@@ -718,27 +978,57 @@ function isSameTitleReupload(current, candidate) {
   if (!current.categories.format.includes('trailer')) return false;
   if (!candidate.categories.format.includes('trailer')) return false;
 
-  const currentTitle = canonicalTitleWords(current.title);
-  const candidateTitle = canonicalTitleWords(candidate.title);
+  const currentTitle = canonicalMovieTitleWords(current.title);
+  const candidateTitle = canonicalMovieTitleWords(candidate.title);
   if (!currentTitle.length || !candidateTitle.length) return false;
 
   return currentTitle.join(' ') === candidateTitle.join(' ');
 }
 
-function canonicalTitleWords(title) {
-  const normalized = cleanTitle(title)
+function isSameTitleOrEpisodeVariant(current, candidate) {
+  const currentWords = canonicalTitleIdentityWords(current.title);
+  const candidateWords = canonicalTitleIdentityWords(candidate.title);
+  if (currentWords.length < 2 || candidateWords.length < 2) return false;
+
+  const shared = overlap(currentWords, candidateWords);
+  const shorter = Math.min(currentWords.length, candidateWords.length);
+  return shared >= 2 && shared / shorter >= 0.82;
+}
+
+function canonicalTitleIdentityWords(title) {
+  const words = normalizedTitleWords(title);
+  const formatIndex = words.findIndex((word) =>
+    ['trailer', 'teaser', 'preview', 'clip', 'episode', 'ep', 'part', 'official', 'video', 'audio', 'lyrics'].includes(word)
+  );
+  const identityWords = formatIndex >= 0 ? words.slice(0, formatIndex) : words;
+
+  return identityWords
+    .filter((word) => !STOPWORDS.has(word))
+    .filter((word) => !GENERIC_TERMS.has(word))
+    .filter((word) => !SAME_CHANNEL_WORDS.has(word))
+    .filter((word) => !/^\d+$/.test(word));
+}
+
+function canonicalMovieTitleWords(title) {
+  const words = normalizedTitleWords(title);
+  const trailerIndex = words.findIndex((word) => word === 'trailer' || word === 'teaser' || word === 'preview');
+  const titleWords = trailerIndex >= 0 ? words.slice(0, trailerIndex) : words;
+
+  return titleWords
+    .filter((word) => !STOPWORDS.has(word))
+    .filter((word) => !GENERIC_TERMS.has(word))
+    .filter((word) => !SAME_CHANNEL_WORDS.has(word));
+}
+
+function normalizedTitleWords(title) {
+  return cleanTitle(title)
     .toLowerCase()
     .replace(/&/g, ' and ')
     .replace(/[''""`]/g, '')
     .replace(/[^a-z0-9]+/g, ' ')
-    .trim();
-
-  return normalized
+    .trim()
     .split(/\s+/)
-    .filter(Boolean)
-    .filter((word) => !STOPWORDS.has(word))
-    .filter((word) => !GENERIC_TERMS.has(word))
-    .filter((word) => !SAME_CHANNEL_WORDS.has(word));
+    .filter(Boolean);
 }
 
 function overlap(a = [], b = []) {
@@ -832,38 +1122,54 @@ async function fetchSearchCandidates(currentProfile) {
 }
 
 function buildSearchQueries(profile) {
-  const genre =
-    profile.categories.movieGenre[0] ||
-    profile.categories.musicGenre[0] ||
-    profile.categories.gamingGenre[0] ||
-    profile.categories.comedyGenre[0] ||
-    profile.categories.podcastGenre[0] ||
-    profile.categories.topic[0] ||
-    '';
+  const movieGenre = profile.categories.movieGenre[0] || '';
+  const musicGenre = profile.categories.musicGenre[0] || '';
+  const gamingGenre = profile.categories.gamingGenre[0] || '';
+  const comedyGenre = profile.categories.comedyGenre[0] || '';
+  const podcastGenre = profile.categories.podcastGenre[0] || '';
+  const topic = profile.categories.topic[0] || '';
+  const genre = movieGenre || musicGenre || gamingGenre || comedyGenre || podcastGenre || topic || '';
   const format = profile.categories.format[0] || '';
   const entity = profile.entities[0] || '';
   const titleWords = titleKeyphrase(profile.title);
 
   const queries = [];
   if (profile.categories.format.includes('trailer')) {
-    if (titleWords) queries.push(`${titleWords} official trailer`);
-    if (titleWords) queries.push(`${titleWords} movie trailer`);
-    if (!titleWords && entity) queries.push(`${entity} official trailer`);
+    if (movieGenre) queries.push(`${movieGenre} movie trailer`);
+    if (movieGenre) queries.push(`new ${movieGenre} movie trailer`);
+    if (movieGenre) queries.push(`${movieGenre} official trailer`);
+    if (!movieGenre && topic) queries.push(`${topic} movie trailer`);
+    if (!movieGenre && !topic && entity) queries.push(`${entity} movie trailer`);
     if (hasAnyToken(profile.contentTokens, ['superhero', 'superman', 'batman', 'justice', 'league', 'dc', 'comic'])) {
       queries.push('superhero action movie trailer');
     }
+  } else if (musicGenre) {
+    queries.push(`${musicGenre} music video`);
+    queries.push(`${musicGenre} official music video`);
+    queries.push(`${musicGenre} latest songs`);
+    if (entity && !entityLooksLikeCurrentTitle(entity, titleWords)) queries.push(`${entity} ${musicGenre} music`);
+  } else if (gamingGenre) {
+    queries.push(`${gamingGenre} gameplay`);
+    queries.push(`${gamingGenre} walkthrough`);
+  } else if (comedyGenre) {
+    queries.push(`${comedyGenre} funny video`);
+  } else if (podcastGenre) {
+    queries.push(`${podcastGenre} podcast episode`);
   }
-  if (entity && genre && (!profile.categories.format.includes('trailer') || entity.includes(' '))) {
+  if (!profile.categories.format.includes('trailer') && !musicGenre && entity && genre && !entityLooksLikeCurrentTitle(entity, titleWords)) {
     queries.push(`${entity} ${genre} ${format}`.trim());
   }
   if (genre && format) queries.push(`${genre} ${format}`.trim());
-  if (profile.categories.musicGenre[0]) queries.push(`${profile.categories.musicGenre[0]} music video`);
-  if (profile.categories.movieGenre[0]) queries.push(`${profile.categories.movieGenre[0]} movie trailer`);
-  if (profile.categories.gamingGenre[0]) queries.push(`${profile.categories.gamingGenre[0]} gameplay`);
-  if (profile.categories.comedyGenre[0]) queries.push(`${profile.categories.comedyGenre[0]} funny video`);
-  if (profile.categories.podcastGenre[0]) queries.push(`${profile.categories.podcastGenre[0]} podcast episode`);
-  if (titleWords && !profile.categories.format.includes('trailer')) queries.push(`${titleWords} related`);
+  if (titleWords && !hasStrongGenreLane(profile) && !profile.categories.format.includes('trailer')) queries.push(`${titleWords} related`);
   return [...new Set(queries.filter(Boolean))];
+}
+
+function entityLooksLikeCurrentTitle(entity, titleWords) {
+  if (!entity || !titleWords) return false;
+  const entityTokens = tokenize(entity).filter((token) => !token.includes('_'));
+  const titleTokens = new Set(tokenize(titleWords).filter((token) => !token.includes('_')));
+  if (!entityTokens.length || !titleTokens.size) return false;
+  return entityTokens.every((token) => titleTokens.has(token));
 }
 
 async function fetchSearchResults(query) {
@@ -1004,6 +1310,236 @@ function blockYouTubeAutoplay() {
   if (cancelBtn) cancelBtn.click();
 
   console.log('YT Fix: autoplay blocked');
+}
+
+function updateNextPreviewFromCandidates(candidates, currentProfile) {
+  if (currentMode === 'off') {
+    clearNextPreview();
+    return;
+  }
+
+  const ranked = rankCandidates(candidates, currentProfile, currentMode);
+  const best = ranked.find((item) => item.gateOk);
+  showNextPreview(best, currentProfile);
+}
+
+function showNextPreview(candidate, currentProfile) {
+  const videoEl = document.querySelector('video');
+  // If loop is active on the player, preserve the loop-set preview and
+  // avoid overwriting it with algorithmic picks.
+  if (videoEl && videoEl.loop) {
+    if (!candidate || !candidate.id) {
+      // When loop is active and there is no candidate, keep existing loop preview.
+      console.log('YT Fix: loop active; skipping clear of preview');
+      return;
+    }
+    // If candidate is the same as the currently-looped video, no change needed.
+    const currentLoopId = nextPreviewCandidate?.id || (videoEl && new URLSearchParams(location.search).get('v'));
+    if (candidate.id !== currentLoopId && candidate.source !== 'loop') {
+      console.log('YT Fix: loop active; preserving loop preview instead of overwriting with candidate', candidate.id);
+      return;
+    }
+  }
+
+  if (!candidate || !candidate.id) {
+    nextPreviewCandidate = null;
+    clearNextPreview();
+    removeNextOverlay(); // ensure no placeholder UI before candidate ready
+    return;
+  }
+
+  nextPreviewCandidate = candidate;
+  const title = candidate.title || candidate.profile?.title || 'Untitled video';
+  const reason = describeCandidateReason(candidate, currentProfile);
+  const modeLabel = currentMode === 'seen' ? 'from your history' : 'fresh pick';
+
+  safeStorageSet({
+    nextVideoPreview: {
+      id: candidate.id,
+      title,
+      url: `https://www.youtube.com/watch?v=${candidate.id}`,
+      thumbnail: `https://i.ytimg.com/vi/${candidate.id}/hqdefault.jpg`,
+      reason,
+      mode: currentMode,
+      modeLabel,
+      score: Number.isFinite(candidate.score) ? Number(candidate.score.toFixed(1)) : null,
+      source: candidate.source || '',
+      currentVideoId,
+      updatedAt: Date.now()
+    }
+  });
+
+}
+
+function renderNextOverlay(candidate) {
+  removeNextOverlay();
+  const container = document.createElement('div');
+  container.id = 'yt-fix-next-overlay';
+  // Fixed positioning for absolute children
+  container.style.position = 'fixed';
+  container.style.bottom = '20px';
+  container.style.right = '20px';
+  container.style.zIndex = '9999';
+  container.style.background = 'rgba(0,0,0,0.8)';
+  container.style.color = '#fff';
+  container.style.padding = '10px';
+  container.style.borderRadius = '8px';
+  container.style.boxShadow = '0 2px 8px rgba(0,0,0,0.5)';
+  container.style.cursor = 'pointer';
+
+  container.innerHTML = `
+    <img src="https://i.ytimg.com/vi/${candidate.id}/mqdefault.jpg" style="width:120px;height:auto;border-radius:4px;display:block;margin-bottom:6px;" />
+    <div style="font-size:14px;font-weight:bold;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${candidate.title}</div>
+    <div style="font-size:12px;opacity:0.8;">Next up</div>
+  `;
+
+  // Refresh button (top‑right)
+  const refreshBtn = document.createElement('button');
+  refreshBtn.id = 'yt-fix-refresh-button';
+  refreshBtn.textContent = 'Refresh';
+  Object.assign(refreshBtn.style, {
+    position: 'absolute',
+    top: '4px',
+    right: '4px',
+    padding: '4px 8px',
+    background: '#ff6600',
+    color: '#fff',
+    border: 'none',
+    borderRadius: '4px',
+    cursor: 'pointer',
+    zIndex: '10000'
+  });
+  container.appendChild(refreshBtn);
+
+  // Close button (top‑left)
+  const closeBtn = document.createElement('button');
+  closeBtn.id = 'yt-fix-close-button';
+  closeBtn.textContent = '✖';
+  Object.assign(closeBtn.style, {
+    position: 'absolute',
+    top: '4px',
+    left: '4px',
+    padding: '2px 6px',
+    background: 'transparent',
+    color: '#fff',
+    border: 'none',
+    fontSize: '16px',
+    cursor: 'pointer',
+    zIndex: '10000'
+  });
+  container.appendChild(closeBtn);
+
+  // Handlers
+  refreshBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    refreshCandidate();
+  });
+  closeBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    removeNextOverlay();
+  });
+
+  container.onclick = () => {
+    window.location.href = `https://www.youtube.com/watch?v=${candidate.id}`;
+  };
+
+  document.body.appendChild(container);
+}
+
+function refreshCandidate() {
+  console.log('Refresh clicked - attempting to update next preview');
+  // Re‑run candidate preparation and preview update
+  // Note: this is a best‑effort placeholder; actual refresh logic may vary.
+  try {
+    // Use existing functions to recompute candidates for current video
+    const currentProfilePromise = resolveCurrentProfile(currentVideoId);
+    currentProfilePromise.then((profile) => {
+      prepareCandidateCache().then((candidates) => {
+        updateNextPreviewFromCandidates(candidates, profile);
+      });
+    });
+  } catch (e) {
+    console.warn('Refresh candidate failed', e);
+  }
+}
+
+async function importChannelHistory(channelId) {
+  try {
+    const url = `https://www.youtube.com/channel/${channelId}/videos?view=0&sort=dd&flow=grid`;
+    const res = await fetch(url);
+    if (!res.ok) {
+      console.warn('YT Fix: failed to fetch channel videos', res.status);
+      return;
+    }
+    const html = await res.text();
+    const videos = extractVideoLinksFromHtml(html);
+    if (!videos.length) {
+      console.warn('YT Fix: no videos found for channel', channelId);
+      return;
+    }
+    // Add each video to watchedVideos storage
+    safeStorageGet(['watchedVideos'], async (data) => {
+      const all = normalizeWatchedVideos(data.watchedVideos || {});
+      const now = Date.now();
+      for (const vid of videos) {
+        if (!all[vid.id]) {
+          // store minimal info; title will be fetched later if needed
+          all[vid.id] = {
+            id: vid.id,
+            title: vid.title || '',
+            channel: getCurrentChannel(),
+            description: '',
+            tags: [],
+            profile: null,
+            timestamp: now
+          };
+        }
+      }
+      watchedVideos = all;
+      safeStorageSet({ watchedVideos: all }, () => {
+        console.log(`YT Fix: imported ${videos.length} channel videos into watched history`);
+      });
+    });
+  } catch (e) {
+    console.warn('YT Fix: error importing channel history', e);
+  }
+}
+
+
+function clearNextPreview() {
+  nextPreviewCandidate = null; overlayShown = false; // track if overlay displayed for current video
+  safeStorageSet({ nextVideoPreview: null });
+}
+
+function describeCandidateReason(candidate, currentProfile) {
+  const candidateProfile = candidate.profile;
+  if (!candidateProfile) return 'Matched by related video signals.';
+
+  const groups = ['movieGenre', 'musicGenre', 'gamingGenre', 'comedyGenre', 'podcastGenre', 'topic', 'format'];
+  const shared = [];
+
+  groups.forEach((group) => {
+    const currentValues = currentProfile?.categories?.[group] || [];
+    const candidateValues = candidateProfile.categories?.[group] || [];
+    candidateValues.forEach((value) => {
+      if (currentValues.includes(value) && !shared.includes(value)) shared.push(value);
+    });
+  });
+
+  if (shared.length) {
+    return `Selected because it shares ${shared.slice(0, 3).map(labelizeTag).join(', ')} with the current video.`;
+  }
+
+  if (candidate.source === 'history') return 'Selected from your watched history because it scored closest to the current video.';
+  if (candidate.source === 'search') return 'Selected from a genre search because it scored closest to the current video.';
+  return 'Selected from YouTube suggestions because it scored closest to the current video.';
+}
+
+function labelizeTag(tag) {
+  return String(tag || '')
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .replace(/_/g, ' ')
+    .toLowerCase();
 }
 
 function getVideoId() {
