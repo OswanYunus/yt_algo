@@ -56,16 +56,19 @@
     }
     
     .tab-content {
-      display: none;
+      display: none !important;
       padding: 14px 18px 18px;
       max-height: 600px;
       overflow-y: auto;
     }
     .tab-content.active {
-      display: block;
+      display: block !important;
     }
     
-    .body { padding: 14px 18px 18px; }
+    .body { 
+      display: none;
+      padding: 14px 18px 18px; 
+    }
     .section-label {
       font-size: 10px; font-weight: 600;
       letter-spacing: 0.08em; text-transform: uppercase;

@@ -55,11 +55,21 @@ if (isExtensionContextAlive()) {
     }
     if (msg.type === 'PREFERENCES_CHANGED') {
       console.log('YT Fix: preferences changed, refiltering content');
-      filterCurrentPageVideos();
+      setTimeout(() => {
+        // Reset the filtering state and reapply
+        const elements = document.querySelectorAll('[data-yt-fix-filtered]');
+        elements.forEach(el => el.removeAttribute('data-yt-fix-filtered'));
+        applyComprehensiveFilter();
+      }, 500);
     }
     if (msg.type === 'BLACKLIST_CHANGED') {
       console.log('YT Fix: blacklist changed, refiltering content');
-      filterCurrentPageVideos();
+      setTimeout(() => {
+        // Reset the filtering state and reapply
+        const elements = document.querySelectorAll('[data-yt-fix-filtered]');
+        elements.forEach(el => el.removeAttribute('data-yt-fix-filtered'));
+        applyComprehensiveFilter();
+      }, 500);
     }
   });
 }

@@ -1,226 +1,304 @@
-// Content filtering based on preferences
-function shouldShowContent(videoElement, videoTitle, channelName, videoTags = []) {
-  // This function checks if content should be shown based on user preferences
-  getPreferences((prefs) => {
-    // Check blacklisted channels
-    if (prefs.blacklistedChannels.length > 0) {
-      for (const blacklistedChannel of prefs.blacklistedChannels) {
-        if (channelName.toLowerCase().includes(blacklistedChannel.toLowerCase()) ||
-            videoTitle.toLowerCase().includes(blacklistedChannel.toLowerCase())) {
-          hideOrModifyContent(videoElement);
-          return;
-        }
-      }
-    }
+// Comprehensive content filtering system
+let filteringActive = false;
+let currentPreferences = null;
 
-    // If no genre preferences set, show everything
-    if (Object.keys(prefs.selectedGenres).length === 0) {
-      return; // Show content
-    }
-
-    // Check if content matches selected genres
-    const contentMatches = checkContentGenreMatch(videoTitle, channelName, videoTags, prefs.selectedGenres);
-    
-    if (!contentMatches) {
-      hideOrModifyContent(videoElement);
-    }
-  });
-}
-
-function checkContentGenreMatch(videoTitle, channelName, videoTags = [], selectedGenres) {
-  // Try to determine content type from title, tags, and channel info
-  const titleLower = videoTitle.toLowerCase();
-  const channelLower = channelName.toLowerCase();
-  const allText = (videoTitle + ' ' + channelName + ' ' + videoTags.join(' ')).toLowerCase();
-
-  // Check against selected genres
-  for (const genreKey of Object.keys(selectedGenres)) {
-    const { category, subcategory, genre } = parseGenreKey(genreKey);
-    const genrePattern = genre.toLowerCase();
-
-    // Simple pattern matching - can be enhanced
-    if (allText.includes(genrePattern)) {
-      return true;
-    }
-
-    // Check for common keywords
-    if (matchesGenreKeywords(allText, category, subcategory, genre)) {
-      return true;
-    }
-  }
-
-  return false;
-}
-
-function matchesGenreKeywords(text, category, subcategory, genre) {
-  const keywords = getGenreKeywords(category, subcategory, genre);
-  for (const keyword of keywords) {
-    if (text.includes(keyword.toLowerCase())) {
-      return true;
-    }
-  }
-  return false;
-}
-
-function getGenreKeywords(category, subcategory, genre) {
-  // Map genres to their keywords for better matching
-  const keywordMap = {
-    'Music': ['music', 'song', 'album', 'remix', 'mix', 'beat', 'lyrics', 'cover', 'live performance'],
-    'Afro': ['afro', 'african', 'amapiano', 'afrobeats', 'wizkid', 'davido', 'burna boy'],
-    'Pop': ['pop', 'billboard', 'top 40', 'radio hit', 'mainstream'],
-    'Hip-Hop/Rap': ['hip hop', 'hiphop', 'rap', 'rapper', 'hip-hop', 'trap', 'freestyle'],
-    'R&B': ['r&b', 'rnb', 'rhythm and blues', 'soul'],
-    'Rock': ['rock', 'metal', 'guitar', 'band', 'led zeppelin', 'pink floyd'],
-    'Electronic/EDM': ['electronic', 'edm', 'dubstep', 'house', 'techno', 'dj'],
-    'Jazz': ['jazz', 'blues', 'saxophone', 'trumpet'],
-    'Classical': ['classical', 'orchestra', 'symphony', 'piano', 'violin'],
-    'Reggae': ['reggae', 'dancehall', 'bob marley'],
-    'Latin': ['latin', 'salsa', 'reggaeton', 'latino', 'spanish music'],
-    'Bollywood': ['bollywood', 'hindi', 'indian music', 'bollywood movie'],
-    'K-Pop': ['kpop', 'k-pop', 'korean', 'bts', 'blackpink', 'exo'],
-    
-    'Movies': ['movie', 'film', 'cinema', 'watch online'],
-    'Horror': ['horror', 'scary', 'thriller', 'supernatural', 'ghost'],
-    'Action': ['action', 'fight', 'explosion', 'adventure'],
-    'Comedy': ['comedy', 'funny', 'humor', 'laugh'],
-    'Drama': ['drama', 'emotional', 'romantic'],
-    'Adventure': ['adventure', 'explore', 'journey'],
-    'Sci-Fi': ['sci-fi', 'sci fi', 'scifi', 'science fiction', 'futuristic', 'alien'],
-    'Fantasy': ['fantasy', 'magic', 'wizard', 'dragon'],
-    
-    'Podcasts': ['podcast', 'episode', 'audio series'],
-    'Sports': ['sports', 'game', 'match', 'highlights', 'goal', 'football', 'basketball'],
-    'Gaming': ['gaming', 'game', 'gameplay', 'esports', 'twitch', 'gaming channel'],
-    'News': ['news', 'breaking news', 'report', 'cnn', 'bbc'],
-    'Education': ['tutorial', 'course', 'learn', 'how to', 'education', 'school'],
-    'Lifestyle': ['lifestyle', 'vlog', 'daily', 'fashion', 'beauty'],
-    'Documentary': ['documentary', 'doc', 'educational'],
-  };
-
-  const genreKeywords = [];
-  
-  // Add direct keywords
-  if (keywordMap[genre]) {
-    genreKeywords.push(...keywordMap[genre]);
-  }
-  
-  // Add category keywords if not subcategory
-  if (!subcategory && keywordMap[category]) {
-    genreKeywords.push(...keywordMap[category]);
-  }
-
-  return genreKeywords;
-}
-
-function hideOrModifyContent(element) {
-  if (!element) return;
-
-  // Hide or modify the element based on its type
-  if (element.style) {
-    element.style.display = 'none';
-    element.style.visibility = 'hidden';
-    element.setAttribute('data-yt-fix-hidden', 'true');
-  } else {
-    // For parent containers
-    element.hidden = true;
-    element.setAttribute('data-yt-fix-hidden', 'true');
-  }
-}
-
+// Initialize filtering
 function initializeContentFiltering() {
-  // Watch for new recommendations being added to the page
-  const observer = new MutationObserver(() => {
-    // Filter videos periodically
-    filterCurrentPageVideos();
-  });
-
-  const config = {
-    childList: true,
-    subtree: true,
-    attributes: true
-  };
-
-  // Start observing for changes
-  const targetNode = document.body;
-  if (targetNode) {
-    observer.observe(targetNode, config);
-  }
-
-  // Initial filter
-  filterCurrentPageVideos();
-
-  // Also filter periodically
-  setInterval(filterCurrentPageVideos, 5000);
-}
-
-function filterCurrentPageVideos() {
-  getPreferences((prefs) => {
-    // If user hasn't set up preferences yet, don't filter
-    if (!prefs.hasSetupPreferences || Object.keys(prefs.selectedGenres).length === 0) {
-      return;
-    }
-
-    // Find all video recommendations on the page
-    const videoElements = document.querySelectorAll('[data-item-id], [data-video-id], ytd-video-renderer, ytd-grid-video-renderer');
-    
-    videoElements.forEach(element => {
-      try {
-        const videoTitle = element.getAttribute('title') || element.textContent || '';
-        const channelName = element.getAttribute('data-channel') || '';
-        
-        // Get more info from the element
-        const titleElement = element.querySelector('a#video-title, h3 a');
-        const actualTitle = titleElement?.textContent || videoTitle;
-        
-        const channelElement = element.querySelector('ytd-channel-name, a.yt-user-name');
-        const actualChannel = channelElement?.textContent || channelName;
-
-        // Check if this content should be shown
-        const shouldShow = shouldContentBeShown(actualTitle, actualChannel, prefs);
-        
-        if (!shouldShow && !element.hasAttribute('data-yt-fix-hidden')) {
-          element.style.display = 'none';
-          element.setAttribute('data-yt-fix-hidden', 'true');
-        } else if (shouldShow && element.hasAttribute('data-yt-fix-hidden')) {
-          element.style.display = '';
-          element.removeAttribute('data-yt-fix-hidden');
-        }
-      } catch (e) {
-        // Silently ignore errors
-      }
-    });
-  });
-}
-
-function shouldContentBeShown(videoTitle, channelName, prefs) {
-  // Check blacklist first
-  if (prefs.blacklistedChannels && prefs.blacklistedChannels.length > 0) {
-    for (const blacklisted of prefs.blacklistedChannels) {
-      if (videoTitle.toLowerCase().includes(blacklisted.toLowerCase()) ||
-          channelName.toLowerCase().includes(blacklisted.toLowerCase())) {
-        return false;
-      }
-    }
-  }
-
-  // If no genre preferences, show everything
-  if (!prefs.selectedGenres || Object.keys(prefs.selectedGenres).length === 0) {
-    return true;
-  }
-
-  // Check genre match
-  const allText = (videoTitle + ' ' + channelName).toLowerCase();
+  console.log('YT Fix: Initializing content filtering');
   
-  for (const genreKey of Object.keys(prefs.selectedGenres)) {
-    const { category, genre } = parseGenreKey(genreKey);
-    const keywords = getGenreKeywords(category, null, genre);
+  getPreferences((prefs) => {
+    currentPreferences = prefs;
     
-    for (const keyword of keywords) {
-      if (allText.includes(keyword.toLowerCase())) {
-        return true;
+    // Only activate filtering if user has set preferences with selected genres
+    if (prefs.hasSetupPreferences && Object.keys(prefs.selectedGenres).length > 0) {
+      filteringActive = true;
+      console.log(`YT Fix: Filtering active for ${Object.keys(prefs.selectedGenres).length} genres`);
+      
+      // Initial filter
+      setTimeout(applyComprehensiveFilter, 500);
+      
+      // Continuous filtering for dynamically loaded content
+      const observer = new MutationObserver(() => {
+        applyComprehensiveFilter();
+      });
+      
+      observer.observe(document.body, {
+        childList: true,
+        subtree: true
+      });
+      
+      // Also filter periodically
+      setInterval(applyComprehensiveFilter, 2000);
+    } else {
+      console.log('YT Fix: Filtering inactive (no preferences set)');
+    }
+  });
+}
+
+function applyComprehensiveFilter() {
+  if (!filteringActive || !currentPreferences) return;
+  
+  // Target all recommendation and video elements
+  const selectors = [
+    'ytd-video-renderer',
+    'ytd-grid-video-renderer', 
+    'ytd-rich-item-renderer',
+    'ytd-compact-video-renderer',
+    'ytd-video-list-renderer',
+    'ytd-rich-grid-renderer',
+    'a[href*="/watch?v="]',
+  ];
+  
+  document.querySelectorAll(selectors.join(',')).forEach(element => {
+    evaluateAndFilterElement(element);
+  });
+}
+
+function evaluateAndFilterElement(element) {
+  // Skip if already processed recently
+  if (element.hasAttribute('data-yt-fix-filtered')) {
+    return;
+  }
+  element.setAttribute('data-yt-fix-filtered', 'true');
+  
+  // Extract video information
+  const videoInfo = extractVideoInfo(element);
+  
+  if (!videoInfo.title || videoInfo.title.length < 2) {
+    // Can't determine content, skip
+    return;
+  }
+  
+  // Check blacklist first
+  if (currentPreferences?.blacklistedChannels && currentPreferences.blacklistedChannels.length > 0) {
+    for (const blacklisted of currentPreferences.blacklistedChannels) {
+      if (videoInfo.title.toLowerCase().includes(blacklisted.toLowerCase()) ||
+          videoInfo.channel.toLowerCase().includes(blacklisted.toLowerCase())) {
+        hideElement(element);
+        return;
       }
     }
   }
+  
+  const shouldShow = matchesSelectedGenres(videoInfo);
+  
+  if (!shouldShow) {
+    hideElement(element);
+  }
+}
 
+function extractVideoInfo(element) {
+  const info = {
+    title: '',
+    channel: '',
+    description: ''
+  };
+  
+  try {
+    // Get title - check multiple selectors
+    let titleElem = element.querySelector('#video-title, h3 a, a#video-title-link, yt-formatted-string.style-scope.ytd-video-renderer');
+    if (titleElem) {
+      info.title = titleElem.getAttribute('title') || titleElem.textContent || '';
+    }
+    
+    // If still no title, try getting from aria-label
+    if (!info.title) {
+      const ariaLabel = element.getAttribute('aria-label');
+      if (ariaLabel) {
+        info.title = ariaLabel;
+      }
+    }
+    
+    // Get channel
+    let channelElem = element.querySelector('ytd-channel-name a, a.yt-user-name');
+    if (channelElem) {
+      info.channel = channelElem.textContent.trim().replace(/\n/g, ' ');
+    }
+    
+    // Get description or additional metadata
+    let descElem = element.querySelector('yt-formatted-string.content-hint, #description-snippet');
+    if (descElem) {
+      info.description = descElem.textContent.trim();
+    }
+    
+  } catch (e) {
+    // Silently ignore
+  }
+  
+  return info;
+}
+
+function matchesSelectedGenres(videoInfo) {
+  if (!currentPreferences?.selectedGenres) return true;
+  
+  const selectedGenres = currentPreferences.selectedGenres;
+  const allText = (videoInfo.title + ' ' + videoInfo.channel + ' ' + videoInfo.description).toLowerCase().trim();
+  
+  if (!allText || allText.length < 2) return false;
+  
+  // Check each selected genre - must match at least one
+  for (const genreKey of Object.keys(selectedGenres)) {
+    if (genreMatchesText(genreKey, allText)) {
+      return true;
+    }
+  }
+  
   return false;
+}
+
+function genreMatchesText(genreKey, textLower) {
+  const { category, genre } = parseGenreKey(genreKey);
+  const keywords = getStrictGenreKeywords(category, genre);
+  
+  // Check if ANY keyword matches strongly
+  for (const keyword of keywords) {
+    const keywordLower = keyword.toLowerCase();
+    if (textLower.includes(keywordLower)) {
+      return true;
+    }
+  }
+  
+  return false;
+}
+
+function getStrictGenreKeywords(category, genre) {
+  const keywordMap = {
+    // MUSIC
+    'Afro': ['afro', 'amapiano', 'afrobeats'],
+    'Pop': ['pop music', 'top 40', 'pop'],
+    'Hip-Hop/Rap': ['hip hop', 'hiphop', 'rap', 'rapper', 'hip-hop', 'trap'],
+    'R&B': ['r&b', 'rnb', 'rhythm blues'],
+    'Rock': ['rock music', 'rock band', 'rock'],
+    'Metal': ['metal', 'heavy metal'],
+    'Country': ['country music', 'country'],
+    'Electronic/EDM': ['edm', 'electronic', 'dubstep', 'house music', 'techno'],
+    'Jazz': ['jazz', 'jazz music'],
+    'Classical': ['classical', 'classical music', 'orchestra'],
+    'Reggae': ['reggae', 'dancehall'],
+    'Latin': ['latin music', 'salsa', 'reggaeton', 'latino'],
+    'Bollywood': ['bollywood', 'hindi music', 'hindi song'],
+    'K-Pop': ['kpop', 'k-pop', 'korean music'],
+    'Folk': ['folk music'],
+    'Blues': ['blues music'],
+    
+    // MOVIES - TRAILERS  
+    'Horror': ['horror movie', 'horror trailer', 'scary movie', 'supernatural'],
+    'Action': ['action movie', 'action trailer', 'action film'],
+    'Comedy': ['comedy movie', 'comedy trailer', 'comedy film'],
+    'Drama': ['drama movie', 'drama trailer', 'drama film'],
+    'Adventure': ['adventure movie', 'adventure trailer'],
+    'Sci-Fi': ['sci fi movie', 'sci-fi', 'science fiction', 'sci-fi movie'],
+    'Fantasy': ['fantasy movie', 'fantasy trailer', 'magical world'],
+    'Thriller': ['thriller movie', 'thriller trailer'],
+    'Mystery': ['mystery movie', 'mystery trailer', 'detective'],
+    'Romance': ['romance movie', 'romantic film'],
+    'Animation': ['animated movie', 'animation trailer', 'anime'],
+    'Crime': ['crime movie', 'crime thriller'],
+    'Western': ['western movie', 'cowboy'],
+    'War': ['war movie', 'military movie'],
+    'Superhero': ['superhero movie', 'marvel', 'dc comics'],
+    'Bollywood': ['bollywood movie', 'bollywood trailer', 'hindi movie'],
+    'Korean': ['korean movie', 'k-drama'],
+    'Japanese': ['japanese movie', 'anime movie'],
+    
+    // SHORT FILMS
+    'Comedy Shorts': ['short film', 'short comedy', 'short'],
+    'Horror Shorts': ['short horror', 'horror short'],
+    'Drama Shorts': ['short drama'],
+    
+    // FULL MOVIES (same as trailers essentially)
+    
+    // PODCASTS
+    'Fun and jokes': ['funny podcast', 'comedy podcast'],
+    'Sports (Podcasts)': ['sports podcast', 'sports talk show'],
+    'Politics': ['political podcast', 'politics podcast', 'news podcast'],
+    'Technology': ['tech podcast', 'technology podcast'],
+    'Business/Entrepreneurship': ['business podcast', 'entrepreneur', 'startup'],
+    'True Crime': ['true crime podcast', 'crime podcast'],
+    'Self-Help/Wellness': ['wellness podcast', 'meditation'],
+    'Science': ['science podcast'],
+    'History': ['history podcast'],
+    
+    // DOCUMENTARIES
+    'Animals/Nature': ['nature documentary', 'animal documentary', 'wildlife'],
+    'Crime/True Crime': ['crime documentary', 'true crime'],
+    'History': ['history documentary', 'historical documentary'],
+    'Science/Technology': ['science documentary', 'tech documentary'],
+    'Environmental': ['environmental documentary', 'climate documentary'],
+    'Politics': ['political documentary', 'politics documentary'],
+    'Space/Universe': ['space documentary', 'cosmos', 'universe documentary'],
+    'Biography': ['biography documentary', 'biographical'],
+    'War': ['war documentary', 'military documentary'],
+    
+    // SPORTS (Videos/Highlights)
+    'Football/Soccer': ['football', 'soccer', 'goal', 'match', 'premier league', 'champions league'],
+    'Basketball': ['basketball', 'nba', 'game', 'highlight'],
+    'American Football': ['american football', 'nfl', 'football game'],
+    'Baseball': ['baseball', 'mlb'],
+    'Tennis': ['tennis', 'tennis match', 'wimbledon'],
+    'Cricket': ['cricket', 'cricket match', 'cricket game'],
+    'Hockey': ['hockey', 'nhl'],
+    'Boxing/MMA': ['boxing', 'mma', 'ufc', 'fight', 'knockout'],
+    'Motorsports': ['formula 1', 'f1', 'racing', 'nascar', 'rally'],
+    'Cycling': ['cycling', 'tour de france', 'bike'],
+    'Volleyball': ['volleyball', 'volleyball game'],
+    'Golf': ['golf', 'pga', 'golf tournament'],
+    'Rugby': ['rugby', 'rugby match'],
+    
+    // GAMING
+    'Let\'s Plays': ['let\'s play', 'gameplay', 'playthrough'],
+    'Game Reviews': ['game review', 'video game review'],
+    'Speedruns': ['speedrun', 'world record'],
+    'Esports/Tournaments': ['esports', 'gaming tournament', 'competitive'],
+    'Game Trailers': ['game trailer'],
+    'Streaming Highlights': ['gaming stream', 'twitch', 'highlight'],
+    
+    // NEWS
+    'Breaking News': ['breaking news', 'news report'],
+    'Politics': ['politics', 'political'],
+    'International': ['international news'],
+    'Technology News': ['tech news', 'technology news'],
+    'Business News': ['business news', 'stock market'],
+    'Sports News': ['sports news'],
+    
+    // EDUCATION
+    'Programming/Coding': ['programming', 'coding', 'python', 'javascript', 'java'],
+    'Mathematics': ['mathematics', 'math tutorial', 'calculus', 'algebra'],
+    'Science': ['science lesson', 'physics', 'chemistry'],
+    'History': ['history lesson', 'historical'],
+    
+    // LIFESTYLE
+    'Fashion': ['fashion', 'clothing', 'outfit'],
+    'Beauty/Makeup': ['makeup', 'beauty', 'makeup tutorial'],
+    'Fitness/Workout': ['fitness', 'workout', 'exercise', 'gym', 'training'],
+    'Cooking/Recipes': ['cooking', 'recipe', 'food', 'cooking show'],
+    'Travel': ['travel vlog', 'travel video', 'traveling'],
+  };
+  
+  return keywordMap[genre] || [genre.toLowerCase()];
+}
+
+function hideElement(element) {
+  if (!element) return;
+  
+  element.style.display = 'none !important';
+  element.style.visibility = 'hidden';
+  element.style.height = '0 !important';
+  element.style.margin = '0 !important';
+  element.style.padding = '0 !important';
+  element.style.overflow = 'hidden';
+  element.setAttribute('data-yt-fix-hidden', 'true');
+  
+  // Also hide parent containers
+  let parent = element.parentElement;
+  let depth = 0;
+  while (parent && depth < 3) {
+    if (parent.classList.contains('yt-dismissible')) {
+      parent.style.display = 'none !important';
+      parent.setAttribute('data-yt-fix-hidden', 'true');
+      break;
+    }
+    parent = parent.parentElement;
+    depth++;
+  }
 }
