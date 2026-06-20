@@ -11,6 +11,7 @@ let activeVideoController = null;
 let activeWatchSession = 0;
 let nextPreviewCandidate = null; let overlayShown = false; // track overlay display
 let autoImportChannelId = null; // optional stored channel id for auto‑import
+let blockedChannelNames = []; // from preferences.blacklistedChannels — used to skip candidates only
 
 const MAX_CANDIDATES_TO_ENRICH = 60;
 const MAX_SEARCH_QUERIES = 4;
@@ -19,9 +20,13 @@ const MAX_SEARCH_QUERIES = 4;
 initializePreferences(() => {
   console.log('YT Fix: Preferences initialized');
   checkAndShowFirstTimeSetup();
-  
-  // Initialize content filtering
+
+  // Initialize content filtering (homepage/feed only — never on /watch)
   setTimeout(initializeContentFiltering, 1000);
+});
+
+getPreferences((prefs) => {
+  blockedChannelNames = prefs.blacklistedChannels || [];
 });
 
 safeStorageGet(['mode', 'watchedVideos', 'autoImportChannelId'], (data) => {
@@ -64,6 +69,7 @@ if (isExtensionContextAlive()) {
     }
     if (msg.type === 'BLACKLIST_CHANGED') {
       console.log('YT Fix: blacklist changed, refiltering content');
+      getPreferences((prefs) => { blockedChannelNames = prefs.blacklistedChannels || []; });
       setTimeout(() => {
         // Reset the filtering state and reapply
         const elements = document.querySelectorAll('[data-yt-fix-filtered]');
@@ -1255,6 +1261,7 @@ function getSidebarVideos() {
         ? el
         : el.querySelector('a#thumbnail, a.ytd-thumbnail, a[href*="/watch?v="]');
       const titleEl = el.querySelector?.('#video-title, #video-title-link, h3 a, .title a, yt-formatted-string#video-title');
+      const channelEl = el.querySelector?.('ytd-channel-name a, ytd-channel-name yt-formatted-string, #channel-name a, .ytd-channel-name');
 
       if (!linkEl) return;
       const title = cleanTitle(
@@ -1266,6 +1273,13 @@ function getSidebarVideos() {
       );
       if (!title) return;
 
+      const channel = cleanTitle(channelEl?.textContent || '');
+      if (channel && blockedChannelNames.length) {
+        const channelLower = channel.toLowerCase();
+        const isBlocked = blockedChannelNames.some((name) => channelLower.includes(String(name).toLowerCase()));
+        if (isBlocked) return; // never offer this channel as a next-video candidate
+      }
+
       let id = null;
       try {
         id = new URL(linkEl.href, location.origin).searchParams.get('v');
@@ -1276,7 +1290,7 @@ function getSidebarVideos() {
       items.push({
         id,
         title,
-        channel: '',
+        channel,
         description: '',
         keywords: '',
         source: 'sidebar',

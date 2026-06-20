@@ -124,13 +124,17 @@ function updateNextPreview(preview) {
     return;
   }
 
-  nextVideoUrl = preview.url || '';
+  nextVideoUrl = preview.url || `https://www.youtube.com/watch?v=${preview.id}`;
   nextCard.hidden = false;
   nextEmpty.hidden = true;
-  nextThumb.src = preview.thumb || '';
-  nextTitle.textContent = preview.title || '...';
-  nextMeta.textContent = preview.meta || '';
-  nextReason.textContent = preview.reason || '';
+  nextThumb.src = preview.thumbnail || `https://i.ytimg.com/vi/${preview.id}/hqdefault.jpg`;
+  nextTitle.textContent = preview.title || 'Untitled video';
+
+  const meta = [preview.modeLabel, preview.source, preview.score ? `score ${preview.score}` : '']
+    .filter(Boolean)
+    .join(' - ');
+  nextMeta.textContent = meta || 'selected next';
+  nextReason.textContent = preview.reason || 'Selected because it matched the current video.';
 }
 
 // PREFERENCES TAB

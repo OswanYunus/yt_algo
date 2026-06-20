@@ -1,75 +1,128 @@
-// Comprehensive content filtering system
+// Comprehensive content filtering system — HOMEPAGE / FYP ONLY.
+//
+// IMPORTANT: this never runs on /watch pages. The autoplay engine in
+// content.js reads live recommendation DOM nodes (ytd-compact-video-renderer,
+// ytd-rich-item-renderer, etc.) to pick the next video. If this filter
+// touches those same nodes while a video is playing, it starves the
+// autoplay engine of candidates and YouTube's native autoplay takes back
+// over. Keeping this scoped to the homepage/feed makes that collision
+// impossible by construction.
+
 let filteringActive = false;
 let currentPreferences = null;
+let feedObserver = null;
+let pageWatchInterval = null;
+let lastUrl = location.href;
+let rescanQueued = false;
+
+function isWatchPage() {
+  return location.pathname === '/watch';
+}
+
+// Pages where the FYP/recommendation filter is allowed to run.
+function isFilterablePage() {
+  if (isWatchPage()) return false;
+  return (
+    location.pathname === '/' ||
+    location.pathname.startsWith('/feed') ||
+    location.pathname.startsWith('/results') // search results, optional but harmless
+  );
+}
 
 // Initialize filtering
 function initializeContentFiltering() {
-  console.log('YT Fix: Initializing content filtering');
-  
+  console.log('YT Fix: Initializing content filtering (homepage-only)');
+
   getPreferences((prefs) => {
     currentPreferences = prefs;
-    
-    // Only activate filtering if user has set preferences with selected genres
-    if (prefs.hasSetupPreferences && Object.keys(prefs.selectedGenres).length > 0) {
-      filteringActive = true;
-      console.log(`YT Fix: Filtering active for ${Object.keys(prefs.selectedGenres).length} genres`);
-      
-      // Initial filter
-      setTimeout(applyComprehensiveFilter, 500);
-      
-      // Continuous filtering for dynamically loaded content
-      const observer = new MutationObserver(() => {
-        applyComprehensiveFilter();
-      });
-      
-      observer.observe(document.body, {
-        childList: true,
-        subtree: true
-      });
-      
-      // Also filter periodically
-      setInterval(applyComprehensiveFilter, 2000);
-    } else {
+
+    const hasGenrePrefs = prefs.hasSetupPreferences && Object.keys(prefs.selectedGenres || {}).length > 0;
+    const hasBlacklist = (prefs.blacklistedChannels || []).length > 0;
+    filteringActive = hasGenrePrefs || hasBlacklist;
+
+    if (!filteringActive) {
       console.log('YT Fix: Filtering inactive (no preferences set)');
+      return;
     }
+
+    console.log(`YT Fix: Filtering armed (genres=${hasGenrePrefs}, blacklist=${hasBlacklist}) — homepage only`);
+
+    runFilterIfAllowed();
+    watchForFeedMutations();
+    watchForPageTypeChanges();
   });
 }
 
+// Re-applies/tears down filtering as the user navigates the SPA between the
+// homepage and a watch page, without ever running both at once.
+function watchForPageTypeChanges() {
+  if (pageWatchInterval) return;
+  pageWatchInterval = setInterval(() => {
+    if (location.href === lastUrl) return;
+    lastUrl = location.href;
+
+    if (isFilterablePage()) {
+      runFilterIfAllowed();
+    } else {
+      stopFeedObserver();
+    }
+  }, 800);
+}
+
+function watchForFeedMutations() {
+  if (feedObserver) return;
+  feedObserver = new MutationObserver(() => {
+    if (!isFilterablePage()) return;
+    // Debounce: many mutations fire in a burst as the feed loads.
+    if (rescanQueued) return;
+    rescanQueued = true;
+    setTimeout(() => {
+      rescanQueued = false;
+      runFilterIfAllowed();
+    }, 400);
+  });
+  feedObserver.observe(document.body, { childList: true, subtree: true });
+}
+
+function stopFeedObserver() {
+  // Keep the observer attached (cheap when gated by isFilterablePage in the
+  // callback) — just skip work while on a watch page.
+}
+
+function runFilterIfAllowed() {
+  if (!filteringActive || !isFilterablePage()) return;
+  applyComprehensiveFilter();
+}
+
 function applyComprehensiveFilter() {
-  if (!filteringActive || !currentPreferences) return;
-  
-  // Target all recommendation and video elements
+  if (!filteringActive || !currentPreferences || !isFilterablePage()) return;
+
+  // Homepage/feed renderer types only — deliberately excludes the
+  // ytd-compact-video-renderer / "#related" elements the autoplay engine
+  // depends on, since those only ever appear on /watch pages anyway.
   const selectors = [
-    'ytd-video-renderer',
-    'ytd-grid-video-renderer', 
     'ytd-rich-item-renderer',
-    'ytd-compact-video-renderer',
-    'ytd-video-list-renderer',
-    'ytd-rich-grid-renderer',
-    'a[href*="/watch?v="]',
+    'ytd-video-renderer',
+    'ytd-grid-video-renderer'
   ];
-  
+
   document.querySelectorAll(selectors.join(',')).forEach(element => {
     evaluateAndFilterElement(element);
   });
 }
 
 function evaluateAndFilterElement(element) {
-  // Skip if already processed recently
   if (element.hasAttribute('data-yt-fix-filtered')) {
     return;
   }
   element.setAttribute('data-yt-fix-filtered', 'true');
-  
-  // Extract video information
+
   const videoInfo = extractVideoInfo(element);
-  
+
   if (!videoInfo.title || videoInfo.title.length < 2) {
-    // Can't determine content, skip
     return;
   }
-  
-  // Check blacklist first
+
   if (currentPreferences?.blacklistedChannels && currentPreferences.blacklistedChannels.length > 0) {
     for (const blacklisted of currentPreferences.blacklistedChannels) {
       if (videoInfo.title.toLowerCase().includes(blacklisted.toLowerCase()) ||
@@ -79,91 +132,78 @@ function evaluateAndFilterElement(element) {
       }
     }
   }
-  
+
+  const hasGenrePrefs = currentPreferences?.hasSetupPreferences &&
+    Object.keys(currentPreferences.selectedGenres || {}).length > 0;
+  if (!hasGenrePrefs) return; // blacklist-only mode: leave everything else alone
+
   const shouldShow = matchesSelectedGenres(videoInfo);
-  
   if (!shouldShow) {
     hideElement(element);
   }
 }
 
 function extractVideoInfo(element) {
-  const info = {
-    title: '',
-    channel: '',
-    description: ''
-  };
-  
+  const info = { title: '', channel: '', description: '' };
+
   try {
-    // Get title - check multiple selectors
     let titleElem = element.querySelector('#video-title, h3 a, a#video-title-link, yt-formatted-string.style-scope.ytd-video-renderer');
     if (titleElem) {
       info.title = titleElem.getAttribute('title') || titleElem.textContent || '';
     }
-    
-    // If still no title, try getting from aria-label
     if (!info.title) {
       const ariaLabel = element.getAttribute('aria-label');
-      if (ariaLabel) {
-        info.title = ariaLabel;
-      }
+      if (ariaLabel) info.title = ariaLabel;
     }
-    
-    // Get channel
-    let channelElem = element.querySelector('ytd-channel-name a, a.yt-user-name');
+
+    let channelElem = element.querySelector('ytd-channel-name a, a.yt-user-name, #channel-name a');
     if (channelElem) {
       info.channel = channelElem.textContent.trim().replace(/\n/g, ' ');
     }
-    
-    // Get description or additional metadata
+
     let descElem = element.querySelector('yt-formatted-string.content-hint, #description-snippet');
     if (descElem) {
       info.description = descElem.textContent.trim();
     }
-    
   } catch (e) {
     // Silently ignore
   }
-  
+
   return info;
 }
 
 function matchesSelectedGenres(videoInfo) {
   if (!currentPreferences?.selectedGenres) return true;
-  
+
   const selectedGenres = currentPreferences.selectedGenres;
   const allText = (videoInfo.title + ' ' + videoInfo.channel + ' ' + videoInfo.description).toLowerCase().trim();
-  
+
   if (!allText || allText.length < 2) return false;
-  
-  // Check each selected genre - must match at least one
+
   for (const genreKey of Object.keys(selectedGenres)) {
     if (genreMatchesText(genreKey, allText)) {
       return true;
     }
   }
-  
+
   return false;
 }
 
 function genreMatchesText(genreKey, textLower) {
   const { category, genre } = parseGenreKey(genreKey);
   const keywords = getStrictGenreKeywords(category, genre);
-  
-  // Check if ANY keyword matches strongly
+
   for (const keyword of keywords) {
-    const keywordLower = keyword.toLowerCase();
-    if (textLower.includes(keywordLower)) {
+    if (textLower.includes(keyword.toLowerCase())) {
       return true;
     }
   }
-  
+
   return false;
 }
 
 function getStrictGenreKeywords(category, genre) {
   const keywordMap = {
-    // MUSIC
     'Afro': ['afro', 'amapiano', 'afrobeats'],
     'Pop': ['pop music', 'top 40', 'pop'],
     'Hip-Hop/Rap': ['hip hop', 'hiphop', 'rap', 'rapper', 'hip-hop', 'trap'],
@@ -180,8 +220,6 @@ function getStrictGenreKeywords(category, genre) {
     'K-Pop': ['kpop', 'k-pop', 'korean music'],
     'Folk': ['folk music'],
     'Blues': ['blues music'],
-    
-    // MOVIES - TRAILERS  
     'Horror': ['horror movie', 'horror trailer', 'scary movie', 'supernatural'],
     'Action': ['action movie', 'action trailer', 'action film'],
     'Comedy': ['comedy movie', 'comedy trailer', 'comedy film'],
@@ -197,18 +235,11 @@ function getStrictGenreKeywords(category, genre) {
     'Western': ['western movie', 'cowboy'],
     'War': ['war movie', 'military movie'],
     'Superhero': ['superhero movie', 'marvel', 'dc comics'],
-    'Bollywood': ['bollywood movie', 'bollywood trailer', 'hindi movie'],
     'Korean': ['korean movie', 'k-drama'],
     'Japanese': ['japanese movie', 'anime movie'],
-    
-    // SHORT FILMS
     'Comedy Shorts': ['short film', 'short comedy', 'short'],
     'Horror Shorts': ['short horror', 'horror short'],
     'Drama Shorts': ['short drama'],
-    
-    // FULL MOVIES (same as trailers essentially)
-    
-    // PODCASTS
     'Fun and jokes': ['funny podcast', 'comedy podcast'],
     'Sports (Podcasts)': ['sports podcast', 'sports talk show'],
     'Politics': ['political podcast', 'politics podcast', 'news podcast'],
@@ -218,19 +249,12 @@ function getStrictGenreKeywords(category, genre) {
     'Self-Help/Wellness': ['wellness podcast', 'meditation'],
     'Science': ['science podcast'],
     'History': ['history podcast'],
-    
-    // DOCUMENTARIES
     'Animals/Nature': ['nature documentary', 'animal documentary', 'wildlife'],
     'Crime/True Crime': ['crime documentary', 'true crime'],
-    'History': ['history documentary', 'historical documentary'],
     'Science/Technology': ['science documentary', 'tech documentary'],
     'Environmental': ['environmental documentary', 'climate documentary'],
-    'Politics': ['political documentary', 'politics documentary'],
     'Space/Universe': ['space documentary', 'cosmos', 'universe documentary'],
     'Biography': ['biography documentary', 'biographical'],
-    'War': ['war documentary', 'military documentary'],
-    
-    // SPORTS (Videos/Highlights)
     'Football/Soccer': ['football', 'soccer', 'goal', 'match', 'premier league', 'champions league'],
     'Basketball': ['basketball', 'nba', 'game', 'highlight'],
     'American Football': ['american football', 'nfl', 'football game'],
@@ -244,61 +268,31 @@ function getStrictGenreKeywords(category, genre) {
     'Volleyball': ['volleyball', 'volleyball game'],
     'Golf': ['golf', 'pga', 'golf tournament'],
     'Rugby': ['rugby', 'rugby match'],
-    
-    // GAMING
-    'Let\'s Plays': ['let\'s play', 'gameplay', 'playthrough'],
+    "Let's Plays": ["let's play", 'gameplay', 'playthrough'],
     'Game Reviews': ['game review', 'video game review'],
     'Speedruns': ['speedrun', 'world record'],
     'Esports/Tournaments': ['esports', 'gaming tournament', 'competitive'],
     'Game Trailers': ['game trailer'],
     'Streaming Highlights': ['gaming stream', 'twitch', 'highlight'],
-    
-    // NEWS
     'Breaking News': ['breaking news', 'news report'],
-    'Politics': ['politics', 'political'],
     'International': ['international news'],
     'Technology News': ['tech news', 'technology news'],
     'Business News': ['business news', 'stock market'],
     'Sports News': ['sports news'],
-    
-    // EDUCATION
     'Programming/Coding': ['programming', 'coding', 'python', 'javascript', 'java'],
     'Mathematics': ['mathematics', 'math tutorial', 'calculus', 'algebra'],
-    'Science': ['science lesson', 'physics', 'chemistry'],
-    'History': ['history lesson', 'historical'],
-    
-    // LIFESTYLE
     'Fashion': ['fashion', 'clothing', 'outfit'],
     'Beauty/Makeup': ['makeup', 'beauty', 'makeup tutorial'],
     'Fitness/Workout': ['fitness', 'workout', 'exercise', 'gym', 'training'],
     'Cooking/Recipes': ['cooking', 'recipe', 'food', 'cooking show'],
     'Travel': ['travel vlog', 'travel video', 'traveling'],
   };
-  
+
   return keywordMap[genre] || [genre.toLowerCase()];
 }
 
 function hideElement(element) {
   if (!element) return;
-  
-  element.style.display = 'none !important';
-  element.style.visibility = 'hidden';
-  element.style.height = '0 !important';
-  element.style.margin = '0 !important';
-  element.style.padding = '0 !important';
-  element.style.overflow = 'hidden';
+  element.style.setProperty('display', 'none', 'important');
   element.setAttribute('data-yt-fix-hidden', 'true');
-  
-  // Also hide parent containers
-  let parent = element.parentElement;
-  let depth = 0;
-  while (parent && depth < 3) {
-    if (parent.classList.contains('yt-dismissible')) {
-      parent.style.display = 'none !important';
-      parent.setAttribute('data-yt-fix-hidden', 'true');
-      break;
-    }
-    parent = parent.parentElement;
-    depth++;
-  }
 }

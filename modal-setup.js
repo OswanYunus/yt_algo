@@ -198,6 +198,11 @@ function showFirstTimeSetupModal() {
 
 // Check and show modal on first load
 function checkAndShowFirstTimeSetup() {
+  // Never interrupt video playback with the setup modal — only show it on
+  // the homepage/feed. If the first-ever load happens to be a watch page,
+  // it'll show next time the user visits the YouTube homepage instead.
+  if (location.pathname === '/watch') return;
+
   hasUserSetupPreferences((hasSetup) => {
     if (!hasSetup) {
       // Wait for DOM to be fully ready
